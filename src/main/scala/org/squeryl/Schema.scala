@@ -86,6 +86,7 @@ trait Schema {
     for(t <- _tables) {
       val sw = new StatementWriter(true, _dbAdapter)
       _dbAdapter.writeCreateTable(t, sw, this)
+      println(sw.statement)
     }
   }
 
