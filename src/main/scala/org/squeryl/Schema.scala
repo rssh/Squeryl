@@ -88,6 +88,28 @@ trait Schema {
       _dbAdapter.writeCreateTable(t, sw, this)
       println(sw.statement)
     }
+
+    if(_dbAdapter.supportsForeignKeyConstraints) {
+      for(fk <- _activeForeignKeySpecs) {
+         val fkDecl = fk._3
+
+         val fkStatement = _dbAdapter.writeForeignKeyDeclaration(
+           fk._1, fkDecl.foreignKeyColumnName,
+           fk._2, fkDecl.referencedPrimaryKey,
+           fkDecl._referentialAction1,
+           fkDecl._referentialAction2,
+           fkDecl.idWithinSchema
+         )
+
+         println(fkStatement);
+      }
+    }
+
+    for(cpk <- _allCompositePrimaryKeys) {
+      val cps = _dbAdapter.writeUniquenessConstraint(cpk._1, cpk._2)
+      println(cps);
+    }
+
   }
 
   /**
