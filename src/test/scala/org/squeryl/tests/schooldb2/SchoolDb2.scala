@@ -3,12 +3,15 @@ package org.squeryl.tests.schooldb2
 import org.squeryl.PrimitiveTypeMode._
 import org.squeryl.tests.QueryTester
 import org.squeryl._
-import dsl.CompositeKey2
+import dsl.ast.TypedExpressionNode
+import dsl.{OneToMany, CompositeKey2}
 import java.sql.{Savepoint, SQLException}
 
 trait SchoolDb2Object extends KeyedEntity[Long] {
   val id: Long = 0
 }
+
+object SchoolDb2 extends SchoolDb2
 
 class Professor(val lastName: String) extends SchoolDb2Object {
 
@@ -30,6 +33,8 @@ class Course(val subjectId: Long) extends SchoolDb2Object {
 class Student(val firstName: String, val lastName: String) extends SchoolDb2Object {
 
   lazy val courses = SchoolDb2.courseSubscriptions.right(this)
+
+  def fullName = compositeKey(firstName, lastName)
 }
 
 class Subject(val name: String) extends SchoolDb2Object {
@@ -47,12 +52,37 @@ class CourseAssignment(val courseId: Long, val professorId: Long) extends KeyedE
   def id = compositeKey(courseId, professorId)
 }
 
+case class Entry(text: String) extends KeyedEntity[Int] {
+ val id:Int = 0
+ // entryToComments is a one-to-many relation:
+ lazy val comments: OneToMany[Comment] = SchoolDb2.entryToComments.left(this)
+}
 
-object SchoolDb2 extends Schema {
+case class Comment(text: String, entryId: Int = 0, userId: Int = 0)
+   extends KeyedEntity[Int] {
+ val id:Int = 0
+}
 
+
+class SchoolDb2 extends Schema {
+
+  val entries = table[Entry]
+  val comments = table[Comment]("commentz")
+
+  val entryToComments = oneToManyRelation(entries, comments).via(
+    (e,c) => e.id === c.entryId)
+  
   val professors = table[Professor]
 
   val students = table[Student]
+
+
+  on(students)(s => declare(
+    s.firstName is(indexed),
+    s.lastName defaultsTo("!"),
+    s.fullName is(unique, indexed),
+    columns(s.id, s.firstName, s.lastName) are(indexed)  
+  ))
 
   val courses = table[Course]
 
@@ -86,29 +116,45 @@ object SchoolDb2 extends Schema {
 
 class SchoolDb2Tests extends QueryTester {
 
-  SchoolDb2.drop
+  val schema = new SchoolDb2
+  
+  import schema._
+
+  schema.drop
 
   //loggerOn
 
-  SchoolDb2.create
+  schema.create
 
-  import SchoolDb2._
+  lazy val seedData = new {
+    
+    val professeurTournesol = professors.insert(new Professor("Tournesol"))
+    val madProfessor = professors.insert(new Professor("Mad Professor"))
 
-  val professeurTournesol = professors.insert(new Professor("Tournesol"))
-  val madProfessor = professors.insert(new Professor("Mad Professor"))
-
-  val philosophy = subjects.insert(new Subject("Philosophy"))
-  val chemistry = subjects.insert(new Subject("Chemistry"))
-  val physics = subjects.insert(new Subject("Physic"))
-  val computationTheory = subjects.insert(new Subject("Computation Theory"))
+    val philosophy = subjects.insert(new Subject("Philosophy"))
+    val chemistry = subjects.insert(new Subject("Chemistry"))
+    val physics = subjects.insert(new Subject("Physic"))
+    val computationTheory = subjects.insert(new Subject("Computation Theory"))
 
 
-  val chemistryCourse = courses.insert(new Course(chemistry.id))
-  val physicsCourse = courses.insert(new Course(physics.id))
+    val chemistryCourse = courses.insert(new Course(chemistry.id))
+    val physicsCourse = courses.insert(new Course(physics.id))
+  }
 
+  def dumpSchema =
+     SchoolDb2.printDdl
 
   def testAll = {
 
+
+    val entry = entries.insert(Entry("An entry"))
+    val comment = Comment("A single comment")
+    entry.comments.associate(comment)
+
+    from(entry.comments)(c => where(c.id === comment.id) select(c))
+    
+    seedData
+    
     testCompositeEquality
 
     testMany2ManyAssociationFromLeftSide
@@ -123,6 +169,8 @@ class SchoolDb2Tests extends QueryTester {
 
 
   def testMany2ManyAssociationFromLeftSide = {
+
+    import seedData._
 
     assertEquals(0, courseAssignments.Count : Long, 'testMany2ManyAssociationFromLeftSide)
 
@@ -147,6 +195,8 @@ class SchoolDb2Tests extends QueryTester {
 
   def testMany2ManyAssociationsFromRightSide = {
 
+    import seedData._
+
     assertEquals(0, courseAssignments.Count : Long, 'testMany2ManyAssociationsFromRightSide)
 
     physicsCourse.professors.associate(professeurTournesol)
@@ -169,6 +219,10 @@ class SchoolDb2Tests extends QueryTester {
   }
 
   def testOneToMany = {
+
+    import seedData._
+
+    val pc = philosophy.id
 
     val philosophyCourse10AMWednesday = new Course
     val philosophyCourse2PMWednesday = new Course
@@ -216,7 +270,8 @@ class SchoolDb2Tests extends QueryTester {
 
   def testCompositeEquality = {
 
-
+    import seedData._
+    
     val a = physicsCourse.professors.associate(professeurTournesol)
 
     val qA = courseAssignments.lookup(compositeKey(a.courseId, a.professorId))
@@ -255,6 +310,8 @@ class SchoolDb2Tests extends QueryTester {
 
   def testUniquenessConstraint = {
 
+    import seedData._
+    
     assertEquals(0, courseAssignments.Count : Long, 'testUniquenessConstraint)
 
     physicsCourse.professors.associate(professeurTournesol)
@@ -286,4 +343,5 @@ class SchoolDb2Tests extends QueryTester {
 
     assertEquals(1, courseAssignments.Count : Long, 'testUniquenessConstraint)
   }
+  
 }

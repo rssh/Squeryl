@@ -17,24 +17,45 @@ package org.squeryl.tests.musicdb
 
 import java.sql.SQLException
 import java.sql.Timestamp
-import java.util.Calendar
 import org.squeryl.tests.QueryTester
 import org.squeryl._
 import adapters.H2Adapter
 import dsl.ast.BinaryOperatorNodeLogicalBoolean
-import dsl.{StringExpression, Measures, GroupWithMeasures}
+import dsl.{EnumExpression, StringExpression, Measures, GroupWithMeasures}
+import java.util.{Date, Calendar}
+
+object Genre extends Enumeration {
+  type Genre = Value
+  val Jazz = Value(1, "Jazz")
+  val Rock = Value(2, "Rock")
+  val Latin = Value(3, "Latin")
+  val Bluegrass = Value(4, "Bluegrass")
+  val RenaissancePolyphony = Value(5, "RenaissancePolyphony")
+}
+
+object Tempo extends Enumeration {
+  type Tempo = Value
+  val Largo = Value(1, "Largo")
+  val Allegro = Value(2, "Allegro")
+  val Presto = Value(3, "Presto")
+}
+
+import Genre._
 
 class MusicDbObject extends KeyedEntity[Int] {
   val id: Int = 0
   var timeOfLastUpdate = new Timestamp(System.currentTimeMillis)
 }
 
-class Person(var firstName:String, var lastName: String) extends MusicDbObject
+class Person(var firstName:String, var lastName: String, val age: Option[Int]) extends MusicDbObject{
+  def this() = this("", "", Some(0))
+}
 
-class Song(val title: String, val authorId: Int, val interpretId: Int, val cdId: Int) extends MusicDbObject
+class Song(val title: String, val authorId: Int, val interpretId: Int, val cdId: Int, var genre: Genre, var secondaryGenre: Option[Genre]) extends MusicDbObject {
+  def this() = this("", 0, 0, 0, Genre.Bluegrass, Some(Genre.Rock))
+}
 
 class Cd(var title: String, var mainArtist: Int, var year: Int) extends MusicDbObject
-
 
 class MusicDb extends Schema with QueryTester {
 
@@ -46,6 +67,17 @@ class MusicDb extends Schema with QueryTester {
 
   val cds = table[Cd]
 
+  override def drop = super.drop
+}
+
+class MusicDbTestRun extends QueryTester {
+
+  import org.squeryl.PrimitiveTypeMode._
+
+  val schema = new MusicDb
+
+  import schema._
+  
   val testInstance = new {
 
     try {
@@ -56,20 +88,20 @@ class MusicDb extends Schema with QueryTester {
     }
 
     create
-
-    val herbyHancock = artists.insert(new Person("Herby", "Hancock"))
-    val ponchoSanchez = artists.insert(new Person("Poncho", "Sanchez"))
-    val mongoSantaMaria = artists.insert(new Person("Mongo", "Santa Maria"))
-    val alainCaron = artists.insert(new Person("Alain", "Caron"))
-    val hossamRamzy = artists.insert(new Person("Hossam", "Ramzy"))
+    
+    val herbyHancock = artists.insert(new Person("Herby", "Hancock", Some(68)))
+    val ponchoSanchez = artists.insert(new Person("Poncho", "Sanchez", None))
+    val mongoSantaMaria = artists.insert(new Person("Mongo", "Santa Maria", None))
+    val alainCaron = artists.insert(new Person("Alain", "Caron", None))
+    val hossamRamzy = artists.insert(new Person("Hossam", "Ramzy", None))
 
     val congaBlue = cds.insert(new Cd("Conga Blue", ponchoSanchez.id, 1998))
-    val   watermelonMan = songs.insert(new Song("Watermelon Man", herbyHancock.id, ponchoSanchez.id, congaBlue.id))
-    val   besameMama = songs.insert(new Song("Besame Mama", mongoSantaMaria.id, ponchoSanchez.id, congaBlue.id))
+    val   watermelonMan = songs.insert(new Song("Watermelon Man", herbyHancock.id, ponchoSanchez.id, congaBlue.id, Jazz, Some(Latin)))
+    val   besameMama = songs.insert(new Song("Besame Mama", mongoSantaMaria.id, ponchoSanchez.id, congaBlue.id, Latin, None))
 
     val freedomSoundAlbum = cds.insert(new Cd("Freedom Sound", ponchoSanchez.id, 1997))
-    val   freedomSound = songs.insert(new Song("Freedom Sound", ponchoSanchez.id, ponchoSanchez.id, freedomSoundAlbum.id))
 
+    val   freedomSound = songs.insert(new Song("Freedom Sound", ponchoSanchez.id, ponchoSanchez.id, freedomSoundAlbum.id, Jazz, Some(Latin)))
 
     val expectedSongCountPerAlbum = List((congaBlue.title,2), (freedomSoundAlbum.title, 1))
   }
@@ -84,6 +116,30 @@ class MusicDb extends Schema with QueryTester {
    from(artists)(a =>
       where(a.firstName === "Poncho") select(a)
    )
+
+  def testJoinWithCompute = {
+    import testInstance._
+    
+    val q =
+      join(artists,songs.leftOuter)((a,s)=>
+        groupBy(a.id, a.firstName)
+        compute(countDistinct(s.map(_.id)))
+        on(a.id === s.map(_.authorId))
+      )
+
+    val r = q.map(q0 => (q0.key._1, q0.measures)).toSet
+
+    println("!:" + r)
+
+    assertEquals(
+      Set((herbyHancock.id, 1),
+          (ponchoSanchez.id,1),
+          (mongoSantaMaria.id,1),
+          (alainCaron.id, 0),
+          (hossamRamzy.id, 0)),
+      r, 'testJoinWithCompute)
+  }
+
 
   def selfJoinNested3Level =
     from(
@@ -228,6 +284,16 @@ class MusicDb extends Schema with QueryTester {
   def working = {
     import testInstance._
 
+    testJoinWithCompute
+    
+    testInTautology
+    
+    testNotInTautology
+
+    testDynamicWhereClause1
+
+    testEnums
+    
     testTimestamp
 
     testConcatFunc
@@ -367,8 +433,7 @@ class MusicDb extends Schema with QueryTester {
             select(&(upper(a.firstName) || lower(a.firstName)))
             orderBy(a.firstName)
           )
-
-        println(q.statement)
+        
 
         import testInstance._
 
@@ -394,8 +459,6 @@ class MusicDb extends Schema with QueryTester {
           orderBy(a.firstName)
         )
 
-    println(q.statement)
-
       val expected = List(mongoSantaMaria.firstName, ponchoSanchez.firstName).map(s=> s + "zozo")
 
       assertEquals(expected, q.toList, 'testConcatFunc)
@@ -416,6 +479,8 @@ class MusicDb extends Schema with QueryTester {
     cal.set(Calendar.SECOND, 0);
     cal.set(Calendar.MILLISECOND, 0);
 
+    val tX1 = new Timestamp(cal.getTimeInMillis)
+
     mongo.timeOfLastUpdate = new Timestamp(cal.getTimeInMillis)
 
     artists.update(mongo)
@@ -425,14 +490,24 @@ class MusicDb extends Schema with QueryTester {
 
     cal.roll(Calendar.SECOND, 12);
 
-    mongo.timeOfLastUpdate = new Timestamp(cal.getTimeInMillis)
+    val tX2 = new Timestamp(cal.getTimeInMillis)
 
-    println(mongo.timeOfLastUpdate)
+    mongo.timeOfLastUpdate = new Timestamp(cal.getTimeInMillis)
+    
 
     artists.update(mongo)
     mongo = artists.where(_.firstName === mongoSantaMaria.firstName).single
 
     assertEquals(new Timestamp(cal.getTimeInMillis), mongo.timeOfLastUpdate, 'testTimestamp)
+
+    val mustBeSome =
+      artists.where(a =>
+        a.firstName === mongoSantaMaria.firstName and
+        //a.timeOfLastUpdate.between(createLeafNodeOfScalarTimestampType(tX1), createLeafNodeOfScalarTimestampType(tX2))
+        a.timeOfLastUpdate.between(tX1, tX2)
+      ).headOption
+
+    assert(mustBeSome != None, "testTimestamp failed");
 
     passed('testTimestamp)
   }
@@ -472,18 +547,17 @@ class MusicDb extends Schema with QueryTester {
     assert(ac.id == alainCaron.id, "expected " + alainCaron.id + " got " + ac.id)
     passed('testKeyedEntityImplicitLookup)
   }
-
   import testInstance._
 
   def testDeleteVariations = {
 
-    var artistForDelete = artists.insert(new Person("Delete", "Me"))
+    var artistForDelete = artists.insert(new Person("Delete", "Me", None))
 
     assert(artists.delete(artistForDelete.id), "delete returned false, expected true")
 
     assert(artists.lookup(artistForDelete.id) == None, "object still exist after delete")
 
-    artistForDelete = artists.insert(new Person("Delete", "Me"))
+    artistForDelete = artists.insert(new Person("Delete", "Me", None))
 
     var c = artists.deleteWhere(a => a.id === artistForDelete.id)
 
@@ -623,4 +697,152 @@ class MusicDb extends Schema with QueryTester {
       }).start
     }
   }
+  
+  
+  def testEnums = {
+
+    //val md = songs.posoMetaData.findFieldMetaDataForProperty("genre").get
+    //val z = md.canonicalEnumerationValueFor(2)
+
+    val q = songs.where(_.genre === Jazz).map(_.id).toSet
+
+    assertEquals(q, Set(watermelonMan.id, freedomSound.id), "testEnum failed")
+
+    var wmm = songs.where(_.id === watermelonMan.id).single
+    
+    wmm.genre = Genre.Latin
+
+    //loggerOn
+    songs.update(wmm)
+
+    wmm = songs.where(_.id === watermelonMan.id).single
+
+    assertEquals(Genre.Latin, wmm.genre, "testEnum failed")
+
+    update(songs)(s =>
+      where(s.id === watermelonMan.id)
+      set(s.genre := Genre.Jazz)
+    )
+
+    wmm = songs.where(_.id === watermelonMan.id).single
+
+    assertEquals(Genre.Jazz, wmm.genre, "testEnum failed")
+
+    //test for  Option[Enumeration] :
+
+    val q2 = songs.where(_.secondaryGenre === Some(Genre.Latin)).map(_.id).toSet
+
+    assertEquals(q2, Set(watermelonMan.id, freedomSound.id), "testEnum failed")
+
+    wmm = songs.where(_.id === watermelonMan.id).single
+
+    wmm.secondaryGenre = Some(Genre.Rock)
+
+    //loggerOn
+    songs.update(wmm)
+
+    wmm = songs.where(_.id === watermelonMan.id).single
+
+    assertEquals(Some(Genre.Rock), wmm.secondaryGenre, "testEnum failed")
+
+    update(songs)(s =>
+      where(s.id === watermelonMan.id)
+      set(s.secondaryGenre := None)
+    )
+
+    wmm = songs.where(_.id === watermelonMan.id).single
+
+    assertEquals(None, wmm.secondaryGenre, "testEnum failed")
+
+
+    update(songs)(s =>
+      where(s.id === watermelonMan.id)
+      set(s.secondaryGenre := Some(Genre.Latin))
+    )
+
+    wmm = songs.where(_.id === watermelonMan.id).single
+
+    assertEquals(Some(Genre.Latin), wmm.secondaryGenre, "testEnum failed")    
+
+    passed('testEnums)
+
+    //val q2 = songs.where(_.genre === Tempo.Allegro)
+  }
+
+  def testDynamicWhereClause1 = {
+
+    val allArtists = artists.toList
+    
+    val q1 = dynamicWhereOnArtists(None, None)
+
+    assertEquals(allArtists.map(_.id).toSet, q1.map(_.id).toSet, 'testDynamicWhereClause1)
+
+    val q2 = dynamicWhereOnArtists(None, Some("S%"))
+
+    assertEquals(Set(ponchoSanchez.id, mongoSantaMaria.id), q2.map(_.id).toSet, 'testDynamicWhereClause1)
+
+    val q3 = dynamicWhereOnArtists(Some("Poncho"), Some("S%"))
+
+    assertEquals(Set(ponchoSanchez.id), q3.map(_.id).toSet, 'testDynamicWhereClause1)
+
+    passed('testDynamicWhereClause1)
+
+    /// Non compilation Test :
+
+    val z1 = from(artists)(a => select(&(nvl(a.age,a.age)))).toList : List[Option[Int]]
+
+    val z2 = from(artists)(a => select(&(nvl(a.age,0)))).toList : List[Int]
+
+    println(z1)
+  }
+
+  def dynamicWhereOnArtists(firstName: Option[String], lastName: Option[String]) =
+      from(artists)(a =>
+        where(
+          (a.firstName === firstName.?) and
+          (a.lastName like lastName.?)
+        )
+        select(a)
+      )
+
+  def testInTautology = {
+    
+    val q = artists.where(_.firstName in Nil).toList
+
+    assertEquals(Nil, q, 'testInTautology)
+
+    passed('testInTautology)
+  }
+
+  def testNotInTautology = {
+
+   val allArtists = artists.map(_.id).toSet
+
+   val q = artists.where(_.firstName notIn Nil).map(_.id).toSet
+
+    assertEquals(allArtists, q, 'testNotInTautology)
+
+    passed('testNotInTautology)
+  }  
+
+//  //class EnumE[A <: Enumeration#Value](val a: A) {
+//  class EnumE[A](val a: A) {
+//
+//    def ===(b: EnumE[A]) = "not relevant"
+//  }
+//
+//  //implicit def enum2EnumNode[A <: Enumeration#Value](e: A) = new EnumE[A](e)
+//
+//  implicit def enum2EnumNode[A <: Enumeration#Value](e: A) = new EnumE[A](e)
+//
+//  import Genre._
+//  import Tempo._
+//
+//  val genre = Jazz
+//  val tempo = Allegro
+//
+//  genre === Latin
+//
+//  tempo === Latin
+//
 }

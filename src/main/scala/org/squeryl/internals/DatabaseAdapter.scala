@@ -111,7 +111,7 @@ trait DatabaseAdapter {
       }
     }
     
-    if(qen.whereClause != None && qen.whereClause.get.children.filter(c => !c.inhibited) != Nil) {      
+    if(qen.hasUnInhibitedWhereClause) {      
       sw.write("Where")
       sw.nextLine
       sw.writeIndented {
@@ -203,29 +203,47 @@ trait DatabaseAdapter {
     def handleBigDecimalType(fmd: Option[FieldMetaData]) = bigDecimalTypeDeclaration(fmd.get.length, fmd.get.scale)
     def handleTimestampType = timestampTypeDeclaration
     def handleBinaryType = binaryTypeDeclaration
+    def handleEnumerationValueType = intTypeDeclaration
     def handleUnknownType(c: Class[_]) =
       error("don't know how to map field type " + c.getName)
   }
   
   def databaseTypeFor(fmd: FieldMetaData) =
-    _declarationHandler.handleType(fmd.wrappedFieldType, Some(fmd))
+    fmd.explicitDbTypeDeclaration.getOrElse(
+      fmd.schema.columnTypeFor(fmd, fmd.parentMetaData.viewOrTable.asInstanceOf[Table[_]]).getOrElse(
+        _declarationHandler.handleType(fmd.wrappedFieldType, Some(fmd))
+      )
+    )
 
   def writeColumnDeclaration(fmd: FieldMetaData, isPrimaryKey: Boolean, schema: Schema): String = {
 
-    val dbTypeDeclaration = schema._columnTypeFor(fmd, this)
+    val dbTypeDeclaration = databaseTypeFor(fmd)
 
-    var res = "  " + fmd.columnName + " " + dbTypeDeclaration
+    val sb = new StringBuilder(128)
+  
+    sb.append("  ")
+    sb.append(fmd.columnName)
+    sb.append(" ")
+    sb.append(dbTypeDeclaration)
+
+    for(d <- fmd.defaultValue) {
+      sb.append(" default ")
+      val sw = new StatementWriter(true,this)
+      sw.addParam(d.value.asInstanceOf[AnyRef])
+      d.doWrite(sw)
+      sb.append(sw.statement)
+    }
 
     if(isPrimaryKey)
-      res += " primary key"
+      sb.append(" primary key")
 
     if(!fmd.isOption)
-      res += " not null"
+      sb.append(" not null")
     
     if(supportsAutoIncrementInColumnDeclaration && fmd.isAutoIncremented)
-      res += " auto_increment"
+      sb.append(" auto_increment")
 
-    res
+    sb.toString
   }
 
   def supportsAutoIncrementInColumnDeclaration:Boolean = true
@@ -233,7 +251,7 @@ trait DatabaseAdapter {
   def writeCreateTable[T](t: Table[T], sw: StatementWriter, schema: Schema) = {
 
     sw.write("create table ")
-    sw.write(t.name);
+    sw.write(t.prefixedName);
     sw.write(" (\n");
     val pk = t.posoMetaData.primaryKey;    
     sw.writeIndented {
@@ -244,7 +262,7 @@ trait DatabaseAdapter {
         ","
       )
     }
-    sw.write(")\n ")
+    sw.write(")")
   }
 
   def prepareStatement(c: Connection, sw: StatementWriter, session: Session): PreparedStatement =
@@ -352,7 +370,7 @@ trait DatabaseAdapter {
     val f = t.posoMetaData.fieldsMetaData.filter(fmd => !fmd.isAutoIncremented)
 
     sw.write("insert into ");
-    sw.write(t.name);
+    sw.write(t.prefixedName);
     sw.write(" (");
     sw.write(f.map(fmd => fmd.columnName).mkString(", "));
     sw.write(") values ");
@@ -370,10 +388,14 @@ trait DatabaseAdapter {
     var v = r
     if(v.isInstanceOf[Product1[_]])
        v = v.asInstanceOf[Product1[Any]]._1.asInstanceOf[AnyRef]
+
     if(v.isInstanceOf[java.util.Date] && ! v.isInstanceOf[java.sql.Date]  && ! v.isInstanceOf[Timestamp])
        v = new java.sql.Date(v.asInstanceOf[java.util.Date].getTime)
-    if(v.isInstanceOf[scala.math.BigDecimal])
+    else if(v.isInstanceOf[scala.math.BigDecimal])
        v = v.asInstanceOf[scala.math.BigDecimal].bigDecimal
+    else if(v.isInstanceOf[scala.Enumeration#Value])
+       v = v.asInstanceOf[scala.Enumeration#Value].id.asInstanceOf[AnyRef]
+
     v
   }
 
@@ -409,9 +431,15 @@ trait DatabaseAdapter {
 //      "?"
 //    }
 
-  def postCreateTable(s: Session, t: Table[_]) = {}
+  /**
+   * When @arg printSinkWhenWriteOnlyMode is not None, the adapter will not execute any statement, but only silently give it to the String=>Unit closure
+   */
+  def postCreateTable(t: Table[_], printSinkWhenWriteOnlyMode: Option[String => Unit]) = {}
   
   def postDropTable(t: Table[_]) = {}
+
+  def createSequenceName(fmd: FieldMetaData) = 
+    "s_" + fmd.parentMetaData.viewOrTable.name + "_" + fmd.columnName
 
   def writeConcatFunctionCall(fn: FunctionNode[_], sw: StatementWriter) = {
     sw.write(fn.name)
@@ -427,7 +455,7 @@ trait DatabaseAdapter {
     val o_ = o.asInstanceOf[AnyRef]
     val pkMd = t.posoMetaData.primaryKey.get
 
-    sw.write("update ", t.name, " set ")
+    sw.write("update ", t.prefixedName, " set ")
     sw.nextLine
     sw.indent
     sw.writeLinesWithSeparator(
@@ -459,7 +487,7 @@ trait DatabaseAdapter {
   def writeDelete[T](t: Table[T], whereClause: Option[ExpressionNode], sw: StatementWriter) = {
 
     sw.write("delete from ")
-    sw.write(t.name)
+    sw.write(t.prefixedName)
     if(whereClause != None) {
       sw.nextLine
       sw.write("where")
@@ -488,7 +516,7 @@ trait DatabaseAdapter {
     val colsToUpdate = us.columns.iterator
 
     sw.write("update ")
-    sw.write(t.name)
+    sw.write(t.prefixedName)
     sw.write(" set")
     sw.indent
     sw.nextLine
@@ -548,7 +576,7 @@ trait DatabaseAdapter {
     foreignKeyConstraintName(foreingKeyTable, idWithinSchema)
 
   def foreignKeyConstraintName(foreignKeyTable: Table[_], idWithinSchema: Int) =
-    foreignKeyTable.name + "FK" + idWithinSchema
+    foreignKeyTable.prefixedName + "FK" + idWithinSchema
 
   @deprecated("Use writeForeignKeyDeclaration instead")
   def writeForeingKeyDeclaration(
@@ -576,13 +604,13 @@ trait DatabaseAdapter {
     val sb = new StringBuilder(256)
 
     sb.append("alter table ")
-    sb.append(foreignKeyTable.name)
+    sb.append(foreignKeyTable.prefixedName)
     sb.append(" add constraint ")
     sb.append(foreignKeyConstraintName(foreignKeyTable, fkId))
     sb.append(" foreign key (")
     sb.append(foreignKeyColumnName)
     sb.append(") references ")
-    sb.append(primaryKeyTable.name)
+    sb.append(primaryKeyTable.prefixedName)
     sb.append("(")
     sb.append(primaryKeyColumnName)
     sb.append(")")
@@ -604,7 +632,7 @@ trait DatabaseAdapter {
     Session.currentSession
 
   def writeDropForeignKeyStatement(foreignKeyTable: Table[_], fkName: String) =
-    "alter table " + foreignKeyTable.name + " drop constraint " + fkName
+    "alter table " + foreignKeyTable.prefixedName + " drop constraint " + fkName
 
   def dropForeignKeyStatement(foreignKeyTable: Table[_], fkName: String, session: Session):Unit =
     execFailSafeExecute(writeDropForeignKeyStatement(foreignKeyTable, fkName), e => true)
@@ -617,7 +645,7 @@ trait DatabaseAdapter {
     "drop table " + tableName
 
   def dropTable(t: Table[_]) =
-    execFailSafeExecute(writeDropTable(t.name), e=> isTableDoesNotExistException(e))
+    execFailSafeExecute(writeDropTable(t.prefixedName), e=> isTableDoesNotExistException(e))
 
   def writeSelectElementAlias(se: SelectElement, sw: StatementWriter) =
     sw.write(se.alias)
@@ -627,9 +655,9 @@ trait DatabaseAdapter {
     val sb = new StringBuilder(256)
     
     sb.append("alter table ")
-    sb.append(t.name)
+    sb.append(t.prefixedName)
     sb.append(" add constraint ")
-    sb.append(t.name + "CPK")
+    sb.append(t.prefixedName + "CPK")
     sb.append(" unique(")
     sb.append(cols.map(_.columnName).mkString(","))
     sb.append(")")
@@ -648,5 +676,54 @@ trait DatabaseAdapter {
   def writeConcatOperator(left: ExpressionNode, right: ExpressionNode, sw: StatementWriter) = {
     val binaryOpNode = new BinaryOperatorNode(left, right, "||")
     binaryOpNode.doWrite(sw)
+  }
+
+//  /**
+//   * @nameOfCompositeKey when not None, the column group forms a composite key, 'nameOfCompositeKey' can be used
+//   * as part of the name to create a more meaningfull name for the constraint
+//   */
+//  def writeUniquenessConstraint(columnDefs: Seq[FieldMetaData], nameOfCompositeKey: Option[String]) = ""
+
+  /**
+   * @name the name specified in the Schema, when not None, it  must be used as the name
+   * @nameOfCompositeKey when not None, the column group forms a composite key, 'nameOfCompositeKey' can be used
+   * as part of the name to create a more meaningfull name for the constraint, when 'name' is None
+   */
+  def writeIndexDeclaration(columnDefs: Seq[FieldMetaData], name:Option[String], nameOfCompositeKey: Option[String], isUnique: Boolean) = {                                    
+    val sb = new StringBuilder(256)
+    sb.append("create ")
+
+    if(isUnique)
+      sb.append("unique ")
+
+    sb.append("index ")
+
+    val tableName = columnDefs.head.parentMetaData.viewOrTable.name
+
+    if(name != None)
+      sb.append(name.get)
+    else if(nameOfCompositeKey != None)
+      sb.append("idx" + nameOfCompositeKey.get)
+    else
+      sb.append("idx" + generateAlmostUniqueSuffixWithHash(tableName + "-" + columnDefs.map(_.columnName).mkString("-")))
+
+    sb.append(" on ")
+
+    sb.append(tableName)
+
+    sb.append(columnDefs.map(_.columnName).mkString(" (",",",")"))
+
+    sb.toString
+  }
+
+  /**
+   * This will create an probabilistically unique string of length no longer than 11 chars,
+   * it can be used to create "almost unique" names where uniqueness is not an absolute requirement,
+   * is not ,
+   */
+  def generateAlmostUniqueSuffixWithHash(s: String): String = {
+    val a32 = new java.util.zip.Adler32
+    a32.update(s.getBytes)
+    a32.getValue.toHexString
   }
 }

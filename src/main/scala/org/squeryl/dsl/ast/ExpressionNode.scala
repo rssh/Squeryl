@@ -18,8 +18,8 @@ package org.squeryl.dsl.ast
 
 import collection.mutable.ArrayBuffer
 import org.squeryl.internals._
-import org.squeryl.Session
 import org.squeryl.dsl._
+import org.squeryl.{KeyedEntity, Schema, Session}
 
 trait ExpressionNode {
 
@@ -86,7 +86,10 @@ trait ExpressionNode {
 
 
 trait ListExpressionNode extends ExpressionNode {
+
   def quotesElement = false
+  
+  def isEmpty: Boolean
 }
 
 trait ListNumerical extends ListExpressionNode
@@ -105,6 +108,22 @@ trait ListString extends ListExpressionNode {
 
 class EqualityExpression(override val left: TypedExpressionNode[_], override val right: TypedExpressionNode[_]) extends BinaryOperatorNodeLogicalBoolean(left, right, "=")
 
+class InListExpression(left: ExpressionNode, right: ListExpressionNode, inclusion: Boolean) extends BinaryOperatorNodeLogicalBoolean(left, right, if(inclusion) "in" else "not in") {
+
+  override def inhibited =
+    if(right.isEmpty)
+      (! inclusion)
+    else
+      super.inhibited
+
+  override def doWrite(sw: StatementWriter) =
+    if(inclusion  && right.isEmpty)
+      sw.write("(1 = 0)")
+    else
+      super.doWrite(sw)
+}
+
+
 class BinaryOperatorNodeLogicalBoolean(left: ExpressionNode, right: ExpressionNode, op: String)
   extends BinaryOperatorNode(left,right, op) with LogicalBoolean {
 
@@ -113,7 +132,7 @@ class BinaryOperatorNodeLogicalBoolean(left: ExpressionNode, right: ExpressionNo
       left.inhibited && right.inhibited
     else
       left.inhibited || right.inhibited
-
+  
   override def doWrite(sw: StatementWriter) = {
     // since we are executing this method, we have at least one non inhibited children
     val nonInh = children.filter(c => ! c.inhibited).iterator
@@ -160,17 +179,92 @@ trait LogicalBoolean extends ExpressionNode  {
 
 class UpdateAssignment(val left: FieldMetaData, val right: ExpressionNode)
 
+trait BaseColumnAttributeAssignment {
+
+  def clearColumnAttributes: Unit
+
+  def isIdFieldOfKeyedEntity: Boolean
+
+  def isIdFieldOfKeyedEntityWithoutUniquenessConstraint =
+    isIdFieldOfKeyedEntity && ! (columnAttributes.exists(_.isInstanceOf[PrimaryKey]) || columnAttributes.exists(_.isInstanceOf[Unique]))
+
+  def columnAttributes: Seq[ColumnAttribute]
+
+  def hasAttribute[A <: ColumnAttribute](implicit m: Manifest[A]) =
+    findAttribute[A](m) != None
+
+  def findAttribute[A <: ColumnAttribute](implicit m: Manifest[A]) =
+    columnAttributes.find(ca => m.erasure.isAssignableFrom(ca.getClass))  
+}
+
+class ColumnGroupAttributeAssignment(cols: Seq[FieldMetaData], columnAttributes_ : Seq[ColumnAttribute])
+  extends BaseColumnAttributeAssignment {
+
+  private val _columnAttributes = new ArrayBuffer[ColumnAttribute]
+
+  _columnAttributes.appendAll(columnAttributes_)
+
+  def columnAttributes = _columnAttributes 
+
+  def addAttribute(a: ColumnAttribute) =
+    _columnAttributes.append(a)
+
+  def clearColumnAttributes = columns.foreach(_._clearColumnAttributes)
+
+  def columns: Seq[FieldMetaData] = cols
+
+  def isIdFieldOfKeyedEntity = false
+
+  def name:Option[String] = None
+}
+
+class CompositeKeyAttributeAssignment(val group: CompositeKey, _columnAttributes: Seq[ColumnAttribute])
+  extends ColumnGroupAttributeAssignment(group._fields, _columnAttributes) {
+
+  override def isIdFieldOfKeyedEntity = {
+    val fmdHead = group._fields.head
+    classOf[KeyedEntity[Any]].isAssignableFrom(fmdHead.parentMetaData.clasz) &&
+    group._propertyName == "id"
+  }
+
+  assert(group._propertyName != None)
+
+  override def name:Option[String] = group._propertyName
+}
+
+class ColumnAttributeAssignment(val left: FieldMetaData, val columnAttributes: Seq[ColumnAttribute])
+  extends BaseColumnAttributeAssignment {
+
+  def clearColumnAttributes = left._clearColumnAttributes
+
+  def isIdFieldOfKeyedEntity = left.isIdFieldOfKeyedEntity 
+}
+
+class DefaultValueAssignment(val left: FieldMetaData, val value: TypedExpressionNode[_])
+  extends BaseColumnAttributeAssignment {
+
+  def isIdFieldOfKeyedEntity = left.isIdFieldOfKeyedEntity
+
+  def clearColumnAttributes = left._clearColumnAttributes
+
+  def columnAttributes = Nil
+}
+
+
 trait TypedExpressionNode[T] extends ExpressionNode {
 
   def sample:T = mapper.sample
 
   def mapper: OutMapper[T]
 
-  def :=[B <% TypedExpressionNode[T]] (b: B) = {
+  def :=[B <% TypedExpressionNode[T]] (b: B) =
     new UpdateAssignment(_fieldMetaData, b : TypedExpressionNode[T])
-  }
+
+  def defaultsTo[B <% TypedExpressionNode[T]](value: B) /*(implicit restrictUsageWithinSchema: Schema) */ =
+    new DefaultValueAssignment(_fieldMetaData, value : TypedExpressionNode[T])
 
   /**
+   * TODO: make safer with compiler plugin
    * Not type safe ! a TypedExpressionNode[T] might not be a SelectElementReference[_] that refers to a FieldSelectElement...   
    */
   private [squeryl] def _fieldMetaData = {
@@ -195,6 +289,25 @@ trait TypedExpressionNode[T] extends ExpressionNode {
       }
     fmd
   }
+
+  private var _inhibitedByWhen = false
+
+  override def inhibited =
+    super.inhibited || _inhibitedByWhen
+
+  def inhibitWhen(inhibited: Boolean): this.type = {
+    _inhibitedByWhen = inhibited
+    this
+  }
+
+  def ? : this.type = {
+    if(! this.isInstanceOf[ConstantExpressionNode[_]])
+      error("the '?' operator (shorthand for 'p.inhibitWhen(p == None))' can only be used on a constant query argument")
+
+    val c = this.asInstanceOf[ConstantExpressionNode[_]]
+
+    inhibitWhen(c.value == None)
+  }  
 }
 
 class TokenExpressionNode(val token: String) extends ExpressionNode {
@@ -230,7 +343,10 @@ class ConstantExpressionNode[T](val value: T) extends ExpressionNode {
 }
 
 class ConstantExpressionNodeList[T](val value: Traversable[T]) extends ExpressionNode with ListExpressionNode {
-  
+
+  def isEmpty =
+    value == Nil
+
   def doWrite(sw: StatementWriter) =
     if(quotesElement)
       sw.write(this.value.map(e=>"'" +e+"'").mkString("(",",",")"))

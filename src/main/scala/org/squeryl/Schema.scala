@@ -16,22 +16,29 @@
 package org.squeryl
 
 
-import dsl.{CompositeKey, ManyToManyRelation, OneToManyRelation}
+import dsl._
+import ast._
 import internals._
 import reflect.{Manifest}
 import java.sql.SQLException
-import collection.mutable.{HashSet, ArrayBuffer};
+import collection.mutable.{HashSet, ArrayBuffer}
+import java.io.PrintWriter
 
 
 trait Schema {
 
-  protected implicit def thisSchema = this 
+  protected implicit def thisSchema = this
 
+  /**
+   * Contains all Table[_]s in this shema, and also all ManyToManyRelation[_,_,_]s (since they are also Table[_]s
+   */
   private val _tables = new ArrayBuffer[Table[_]] 
 
   private val _oneToManyRelations = new ArrayBuffer[OneToManyRelation[_,_]]
 
   private val _manyToManyRelations = new ArrayBuffer[ManyToManyRelation[_,_,_]]
+
+  private val _columnGroupAttributeAssignments = new ArrayBuffer[ColumnGroupAttributeAssignment]
 
   private [squeryl] val _namingScope = new HashSet[String] 
 
@@ -44,7 +51,7 @@ trait Schema {
   private def _dbAdapter = Session.currentSession.databaseAdapter
 
   /**
-   * @returns a tuple of (Table[_], Table[_], ForeignKeyDeclaration) where
+   *  @returns a tuple of (Table[_], Table[_], ForeignKeyDeclaration) where
    *  ._1 is the foreign key table,
    *  ._2 is the primary key table
    *  ._3 is the ForeignKeyDeclaration between _1 and _2
@@ -65,11 +72,15 @@ trait Schema {
     res
   }
 
-
+  @deprecated("will be removed in a future version")
   def findTableFor[A](a: A): Option[Table[A]] = {
     val c = a.asInstanceOf[AnyRef].getClass
     _tables.find(_.posoMetaData.clasz == c).asInstanceOf[Option[Table[A]]]
   }
+
+  private def findAllTablesFor[A](c: Class[A]) =
+    _tables.filter(t => c.isAssignableFrom(t.posoMetaData.clasz)).asInstanceOf[Traversable[Table[_]]]
+
 
   object NamingConventionTransforms {
     
@@ -81,35 +92,62 @@ trait Schema {
 
   def tableNameFromClassName(tableName: String) = tableName
 
-  def printDml = {
+  def name: Option[String] = None
+
+  /**
+   * Prints the schema to standard output, it is simply : schema.printDdl(println(_))
+   */
+  def printDdl: Unit = printDdl(println(_))
+
+  def printDdl(pw: PrintWriter): Unit = printDdl(pw.println(_))
+
+  /**
+   * @arg statementHandler is a closure that receives every declaration in the schema.
+   */
+  def printDdl(statementHandler: String => Unit): Unit = {
+
+    statementHandler("-- table declarations :")
 
     for(t <- _tables) {
       val sw = new StatementWriter(true, _dbAdapter)
       _dbAdapter.writeCreateTable(t, sw, this)
-      println(sw.statement)
+      statementHandler(sw.statement + ";")
+      _dbAdapter.postCreateTable(t, Some(statementHandler))
+
+      val indexDecl = _indexDeclarationsFor(t)
+
+      if(indexDecl != Nil)
+        statementHandler("-- indexes on " + t.prefixedName)
+
+      for(i <- indexDecl)
+        statementHandler(i + ";")
     }
 
-    if(_dbAdapter.supportsForeignKeyConstraints) {
-      for(fk <- _activeForeignKeySpecs) {
-         val fkDecl = fk._3
+    val constraints = _foreignKeyConstraints.toList
+    
+    if(constraints != Nil)
+      statementHandler("-- foreign key constraints :")
 
-         val fkStatement = _dbAdapter.writeForeignKeyDeclaration(
-           fk._1, fkDecl.foreignKeyColumnName,
-           fk._2, fkDecl.referencedPrimaryKey,
-           fkDecl._referentialAction1,
-           fkDecl._referentialAction2,
-           fkDecl.idWithinSchema
-         )
+    for(fkc <- constraints)
+      statementHandler(fkc + ";")
 
-         println(fkStatement);
-      }
+    val compositePKs = _allCompositePrimaryKeys.toList
+
+    if(compositePKs != Nil)
+      statementHandler("-- composite key indexes :")
+    
+    for(cpk <- compositePKs) {
+      val createConstraintStmt = _dbAdapter.writeUniquenessConstraint(cpk._1, cpk._2)
+      statementHandler(createConstraintStmt + ";")
     }
 
-    for(cpk <- _allCompositePrimaryKeys) {
-      val cps = _dbAdapter.writeUniquenessConstraint(cpk._1, cpk._2)
-      println(cps);
-    }
+    val columnGroupIndexes = _writeColumnGroupAttributeAssignments.toList
 
+    if(columnGroupIndexes != Nil)
+      statementHandler("-- column group indexes :")
+
+    for(decl <- columnGroupIndexes)
+      statementHandler(decl + ";")
   }
 
   /**
@@ -137,8 +175,41 @@ trait Schema {
     if(_dbAdapter.supportsForeignKeyConstraints)
       _declareForeignKeyConstraints
 
-    _createUniqueConstraints
+    _createUniqueConstraintsOfCompositePKs
+
+    createColumnGroupConstraintsAndIndexes
   }
+
+  private def _indexDeclarationsFor(t: Table[_]) = {
+    val d0 =
+      for(fmd <- t.posoMetaData.fieldsMetaData)
+        yield _writeIndexDeclarationIfApplicable(fmd.columnAttributes.toSeq, Seq(fmd), None)
+
+    d0.filter(_ != None).map(_.get).toList
+  }
+  
+
+  private def _writeColumnGroupAttributeAssignments: Seq[String] =
+    for(cgaa <- _columnGroupAttributeAssignments)
+      yield _writeIndexDeclarationIfApplicable(cgaa.columnAttributes, cgaa.columns, cgaa.name).
+        getOrElse(error("emtpy attribute list should not be possible to create with DSL (Squeryl bug)."))
+
+  private def _writeIndexDeclarationIfApplicable(columnAttributes: Seq[ColumnAttribute], cols: Seq[FieldMetaData], name: Option[String]): Option[String] = {
+
+    val unique = columnAttributes.find(_.isInstanceOf[Unique])
+    val indexed = columnAttributes.find(_.isInstanceOf[Indexed])
+  
+    (unique, indexed) match {
+      case (None,    None)                   => None
+      case (Some(_), None)                   => Some(_dbAdapter.writeIndexDeclaration(cols, None,    name, true))
+      case (None,    Some(Indexed(idxName))) => Some(_dbAdapter.writeIndexDeclaration(cols, idxName, name, false))
+      case (Some(_), Some(Indexed(idxName))) => Some(_dbAdapter.writeIndexDeclaration(cols, idxName, name, true))
+    }
+  }
+  
+  def createColumnGroupConstraintsAndIndexes =
+    for(statement <- _writeColumnGroupAttributeAssignments)
+      _executeDdl(statement)
 
   private def _dropForeignKeyConstraints = {
 
@@ -152,72 +223,55 @@ trait Schema {
   }
 
   private def _declareForeignKeyConstraints =
-    for(fk <- _activeForeignKeySpecs) {
+    for(fk <- _foreignKeyConstraints)
+      _executeDdl(fk)
+
+  private def _executeDdl(statement: String) = {
+
+    val cs = Session.currentSession
+    cs.log(statement)
+
+    val s = cs.connection.createStatement
+    try {
+      s.execute(statement)
+    }
+    catch {
+      case e:SQLException => throw new RuntimeException("error executing " + statement + "\n" + e, e)
+    }
+    finally {
+      s.close
+    }
+  }
+  
+  private def _foreignKeyConstraints =
+    for(fk <- _activeForeignKeySpecs) yield {
       val fkDecl = fk._3
 
-      val fkStatement = _dbAdapter.writeForeignKeyDeclaration(
+      _dbAdapter.writeForeignKeyDeclaration(
          fk._1, fkDecl.foreignKeyColumnName,
          fk._2, fkDecl.referencedPrimaryKey,
          fkDecl._referentialAction1,
          fkDecl._referentialAction2,
          fkDecl.idWithinSchema
       )
-            
-      val cs = Session.currentSession
-      val s = cs.connection.createStatement
-      try {
-        s.execute(fkStatement)
-      }
-      catch {
-        case e:SQLException => throw new RuntimeException("error executing " + fkStatement + "\n" + e, e)
-      }
-      finally {
-        s.close
-      }
     }
-
-
-  private def _createTables =
+  
+  private def _createTables = {
     for(t <- _tables) {
-      var sw:StatementWriter = null
-      try {
-        sw = new StatementWriter(_dbAdapter)
-        _dbAdapter.writeCreateTable(t, sw, this)
-        val cs = Session.currentSession
-        val s = cs.connection.createStatement
-        val createS = sw.statement
-        if(cs.isLoggingEnabled)
-          cs.log(createS)
-        s.execute(createS)
-      }
-      catch {
-        case e:SQLException => throw new RuntimeException(
-          "error creating table : " +
-          e.getMessage + "ErrorCode:" + e.getErrorCode + ", SQLState:" + e.getSQLState + "\n" + sw.statement, e
-        )
-      }
-
-      _dbAdapter.postCreateTable(Session.currentSession, t)
-    }    
-
-  private def _createUniqueConstraints = {
-
-    val cs = Session.currentSession
-
-    for(cpk <- _allCompositePrimaryKeys) {
-
-      val createConstraintStmt = _dbAdapter.writeUniquenessConstraint(cpk._1, cpk._2)
-      val s = cs.connection.createStatement
-      try{
-        if(cs.isLoggingEnabled)
-          cs.log(createConstraintStmt)
-        s.execute(createConstraintStmt)
-      }
-      finally {
-        s.close
-      }
+      val sw = new StatementWriter(_dbAdapter)
+      _dbAdapter.writeCreateTable(t, sw, this)
+      _executeDdl(sw.statement)
+      _dbAdapter.postCreateTable(t, None)
+      for(indexDecl <- _indexDeclarationsFor(t))
+        _executeDdl(indexDecl)
     }
   }
+
+  private def _createUniqueConstraintsOfCompositePKs =
+    for(cpk <- _allCompositePrimaryKeys) {
+      val createConstraintStmt = _dbAdapter.writeUniquenessConstraint(cpk._1, cpk._2)
+      _executeDdl(createConstraintStmt)
+    }  
 
   /**
    * returns an Iterable of (Table[_],Iterable[FieldMetaData]), the list of
@@ -245,20 +299,44 @@ trait Schema {
     res
   }
 
-  protected def columnTypeFor(fieldMetaData: FieldMetaData, databaseAdapter: DatabaseAdapter): String =
-    databaseAdapter.databaseTypeFor(fieldMetaData)
-
-  private [squeryl] def _columnTypeFor(fmd: FieldMetaData, dba: DatabaseAdapter): String =
-    this.columnTypeFor(fmd, dba)
+  /**
+   * Use this method to override the DatabaseAdapter's default column type for the given field
+   * (FieldMetaData), returning None means that no override will take place.
+   *
+   * There are two levels at which db column type can be overriden, in order of precedence :
+   *
+   *   on(professors)(p => declare(
+   *      s.yearlySalary is(dbType("real"))
+   *    ))
+   *
+   *  overrides (has precedence over) :
+   *
+   *  MySchema extends Schema {
+   *    ...
+   *    override def columnTypeFor(fieldMetaData: FieldMetaData, owner: Table[_]) =
+   *      if(fieldMetaData.wrappedFieldType.isInstanceOf[Int)
+   *        Some("number")
+   *      else
+   *        None
+   *  }
+   *
+   */
+  def columnTypeFor(fieldMetaData: FieldMetaData, owner: Table[_]): Option[String] = None
   
-  def tableNameFromClass(c: Class[_]):String =     
+  def tableNameFromClass(c: Class[_]):String =
     c.getSimpleName
 
   protected def table[T]()(implicit manifestT: Manifest[T]): Table[T] =
     table(tableNameFromClass(manifestT.erasure))(manifestT)
   
   protected def table[T](name: String)(implicit manifestT: Manifest[T]): Table[T] = {
-    val t = new Table[T](name, manifestT.erasure.asInstanceOf[Class[T]], this)
+    val t = new Table[T](name, manifestT.erasure.asInstanceOf[Class[T]], this, None)
+    _addTable(t)
+    t
+  }
+
+  protected def table[T](name: String, prefix: String)(implicit manifestT: Manifest[T]): Table[T] = {
+    val t = new Table[T](name, manifestT.erasure.asInstanceOf[Class[T]], this, Some(prefix))
     _addTable(t)
     t
   }
@@ -319,4 +397,101 @@ trait Schema {
    * default is 128 
    */
   def defaultLengthOfString = 123
+
+  /**
+   * protected since table declarations must only be done inside a Schema
+   */
+
+  protected def declare[B](a: BaseColumnAttributeAssignment*) = a
+
+  /**
+   * protected since table declarations must only be done inside a Schema
+   */  
+  protected def on[A](table: Table[A]) (declarations: A=>Seq[BaseColumnAttributeAssignment]) = {
+
+    val colAss: Seq[BaseColumnAttributeAssignment] =
+      Utils.mapSampleObject(table, declarations)
+
+    // all fields that have a single 'is' declaration are first reset :
+    for(ca <- colAss if ca.isInstanceOf[ColumnAttributeAssignment])
+      ca.clearColumnAttributes
+
+    for(ca <- colAss) ca match {
+      case dva:DefaultValueAssignment    => {
+
+        if(! dva.value.isInstanceOf[ConstantExpressionNode[_]])
+          error("error in declaration of column "+ table.prefixedName + "." + dva.left.nameOfProperty + ", " + 
+                "only constant expressions are supported in 'defaultsTo' declaration")
+
+        dva.left._defaultValue = Some(dva.value.asInstanceOf[ConstantExpressionNode[_]])
+      }
+      case caa:ColumnAttributeAssignment => {
+
+        for(ca <- caa.columnAttributes)
+          (caa.left._addColumnAttribute(ca))
+
+        //don't allow a KeyedEntity.id field to not have a uniqueness constraint :
+        if(ca.isIdFieldOfKeyedEntityWithoutUniquenessConstraint)
+          caa.left._addColumnAttribute(primaryKey)
+      }
+      case ctaa:ColumnGroupAttributeAssignment => {
+
+        //don't allow a KeyedEntity.id field to not have a uniqueness constraint :
+        if(ca.isIdFieldOfKeyedEntityWithoutUniquenessConstraint)
+          ctaa.addAttribute(primaryKey)
+
+        _addColumnGroupAttributeAssignment(ctaa)
+      }
+      
+      case a:Any => error("did not match on " + a.getClass.getName)
+    }
+
+//    for(ca <- colAss.find(_.isIdFieldOfKeyedEntity))
+//      assert(
+//        ca.columnAttributes.exists(_.isInstanceOf[PrimaryKey]) ||
+//        ca.columnAttributes.exists(_.isInstanceOf[Unique]),
+//        "Column 'id' of table '" + table.name +
+//        "' must have a uniqueness constraint by having the column attribute 'primaryKey' or 'unique' to honor it's KeyedEntity trait"
+//      )
+
+
+    // Validate that autoIncremented is not used on other fields than KeyedEntity[A].id :
+    // since it is not yet unsupported :
+    for(ca <- colAss) ca match {
+      case cga:CompositeKeyAttributeAssignment => {}
+      case caa:ColumnAttributeAssignment => {
+        for(ca <- caa.columnAttributes if ca.isInstanceOf[AutoIncremented] && !(caa.left.isIdFieldOfKeyedEntity))
+          error("Field " + caa.left.nameOfProperty + " of table " + table.name +
+                " is declared as autoIncrementeded, auto increment is currently only supported on KeyedEntity[A].id")
+      }
+      case dva:Any => {}
+    }
+  }
+
+  private def _addColumnGroupAttributeAssignment(cga: ColumnGroupAttributeAssignment) =
+    _columnGroupAttributeAssignments.append(cga);
+  
+  def defaultColumnAttributesForKeyedEntityId = Set(new PrimaryKey, new AutoIncremented(None))
+  
+  protected def unique = Unique()
+
+  protected def primaryKey = PrimaryKey()
+
+  protected def autoIncremented = AutoIncremented(None)
+  
+  protected def autoIncremented(sequenceName: String) = AutoIncremented(Some(sequenceName))
+
+  protected def indexed = Indexed(None)
+
+  protected def indexed(indexName: String) = Indexed(Some(indexName))
+
+  protected def dbType(declaration: String) = DBType(declaration)
+
+  class ColGroupDeclaration(cols: Seq[FieldMetaData]) {
+
+    def are(columnAttributes: AttributeValidOnMultipleColumn*) =
+      new ColumnGroupAttributeAssignment(cols, columnAttributes)
+  }
+
+  def columns(fieldList: TypedExpressionNode[_]*) = new ColGroupDeclaration(fieldList.map(_._fieldMetaData))
 }

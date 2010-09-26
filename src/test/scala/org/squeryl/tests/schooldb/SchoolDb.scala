@@ -25,8 +25,8 @@ import org.squeryl.dsl.{GroupWithMeasures}
 import org.squeryl.dsl._
 import ast.TypedExpressionNode
 import org.squeryl._
-import adapters.MySQLAdapter
-import internals.FieldReferenceLinker
+import adapters.{PostgreSqlAdapter, OracleAdapter, MySQLAdapter}
+import internals.{FieldMetaData, FieldReferenceLinker}
 
 class SchoolDbObject extends KeyedEntity[Int] {
   var id: Int = 0
@@ -86,22 +86,27 @@ class Professor(var lastName: String, var yearlySalary: Float, var weight: Optio
   var id: Long = 0
   def this() = this("", 0.0F, Some(0.0F), 80.0F, Some(0))
   override def toString = "Professor:" + id
+}
 
-  import org.squeryl.PrimitiveTypeMode._
-  
-  //def assignments =
-    //oneToMany(this, SDB.courseAssigments) ((p, ca) => p.id === ca.professorId)
 
-  //def assign = Relation(this, SDB.courseAssigments) {}
-//  def assignments =
-//    One(this) ToMany(SDB.courseAssigments) on(p=>p.id, ca => ca.professorId)
+class School(val addressId: Int, val name: String) extends KeyedEntity[Long] {
+  var id: Long = 0
 }
 
 object SDB extends SchoolDb
 
-class SchoolDb extends Schema with QueryTester {
+class SchoolDb extends Schema {
 
   import org.squeryl.PrimitiveTypeMode._
+
+  override val name = {
+    if(Session.currentSession.databaseAdapter.isInstanceOf[OracleAdapter])
+      Some("squeryl")
+    else if(Session.currentSession.databaseAdapter.isInstanceOf[PostgreSqlAdapter])
+      Some("public")
+    else
+      None
+  }
 
   override def columnNameFromPropertyName(n:String) =
     NamingConventionTransforms.camelCase2underScore(n)
@@ -123,7 +128,40 @@ class SchoolDb extends Schema with QueryTester {
   val courseSubscriptions = table[CourseSubscription]
 
   val courseAssigments = table[CourseAssignment]
+
+  val schools = table[School]
+
+  on(schools)(s => declare(
+    s.name is(indexed("uniqueIndexName"), unique),
+    s.name defaultsTo("no name"),
+    columns(s.name, s.addressId) are(indexed)
+    //_.addressId is(autoIncremented) currently only supported on KeyedEntity.id ... ! :(
+  ))
+
+  on(professors)(p => declare(
+    p.yearlySalary is(dbType("real"))
+  ))
+
+  // disable the override, since the above is good for Oracle only, this is not a usage demo, but
+  // a necessary hack to test the dbType override mechanism and still allow the test suite can run on all database : 
+  override def columnTypeFor(fieldMetaData: FieldMetaData, owner: Table[_])  =
+    if(fieldMetaData.nameOfProperty == "yearlySalary" && Session.currentSession.databaseAdapter.isInstanceOf[OracleAdapter])
+      Some("float")
+    else
+      None
+
+
+  override def drop = super.drop
+}
+
+class SchoolDbTestRun extends QueryTester {
+
+  import org.squeryl.PrimitiveTypeMode._
   
+  val schema = new SchoolDb
+
+  import schema._
+
   val testInstance = new {
 
     drop
@@ -163,6 +201,32 @@ class SchoolDb extends Schema with QueryTester {
     Session.currentSession.connection.commit
   }
 
+  def testCountSignatures = {
+
+    val q =
+      from(courseSubscriptions)(cs =>
+        compute(countDistinct(cs.courseId))
+      )
+
+    assertEquals(4L, q: Long, 'testCountSignatures)
+
+    val q2 =
+      from(courseSubscriptions)(cs =>
+        compute(count(cs.courseId))
+      )
+
+    assertEquals(5L, q2: Long, 'testCountSignatures)
+    
+    val q3 =
+      from(courseSubscriptions)(cs =>
+        compute(count)
+      )
+
+    assertEquals(5L, q3: Long, 'testCountSignatures)
+
+    passed('testCountSignatures)
+  }
+
   def avgStudentAge =
     from(students)(s =>
       compute(avg(s.age))
@@ -188,13 +252,14 @@ class SchoolDb extends Schema with QueryTester {
   def test1 = {
 
     //Must run first, because later we won't have the rows we need to perform the test
-
+    testCountSignatures
+    
     blobTest
     
     testYieldInspectionResidue
-    
+
     testNewLeftOuterJoin3
-    
+
     testNewLeftOuterJoin1
 
     testNewLeftOuterJoin2
@@ -546,21 +611,21 @@ class SchoolDb extends Schema with QueryTester {
 
     val result1 =
       from(courses)(c=>
-        where(c.finalExamDate >= jan2008 and c.finalExamDate.isNotNull)
+        where(c.finalExamDate >= Some(jan2008) and c.finalExamDate.isNotNull)
         select(c)
         orderBy(c.finalExamDate, c.id asc)
       ).toList.map(c=>c.id)
 
     val result2 =
       from(courses)(c=>
-        where(c.finalExamDate <= jan2009)
+        where(c.finalExamDate <= Some(jan2009))
         select(c)
         orderBy(c.finalExamDate, c.id asc)
       ).toList.map(c=>c.id)
 
     val result3 =
       from(courses)(c=>
-        where(c.finalExamDate >= feb2009)
+        where(c.finalExamDate >= Some(feb2009))
         select(c)
         orderBy(c.finalExamDate, c.id asc)
       ).toList.map(c=>c.id)
@@ -1062,7 +1127,7 @@ class SchoolDb extends Schema with QueryTester {
 
     println('testNewOuterJoin2 + " passed.")
   }
-
+  
   def testNewLeftOuterJoin3 {
     import testInstance._
 
@@ -1122,7 +1187,10 @@ class Issue14 extends Schema with QueryTester {
     weight real
   )
 """)
-        try {stmt.execute("create sequence s_issue14")}
+
+        //stmt.execute("create sequence s_id_issue14")
+        val seqName = (new OracleAdapter).createSequenceName(professors.posoMetaData.findFieldMetaDataForProperty("id").get)
+        try {stmt.execute("create sequence " + seqName)}
         catch {
           case e:SQLException => {} 
         }

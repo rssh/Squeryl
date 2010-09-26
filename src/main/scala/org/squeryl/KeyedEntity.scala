@@ -62,14 +62,15 @@ trait KeyedEntity[K] extends PersistenceStatus {
 
 
 trait PersistenceStatus {
-  
+
+  @transient
   @Transient
   private [squeryl] var _isPersisted = false
 
   def isPersisted: Boolean = _isPersisted
 }
 
-
+@deprecated("this trait is no longer necessary, it will disapear in a future version")
 trait IndirectKeyedEntity[K,T] extends KeyedEntity[K] {
   
   def idField: T

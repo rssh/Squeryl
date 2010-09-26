@@ -18,7 +18,7 @@ package org.squeryl.dsl
 import ast._
 import org.squeryl.internals._
 import java.util.Date
-import java.sql.ResultSet
+import java.sql.{Timestamp, ResultSet}
 
 class NumericalTypeConversion[A](e: ExpressionNode)(implicit val mapper: OutMapper[A]) extends TypeConversion(e) with NumericalExpression[A]
 
@@ -38,6 +38,22 @@ class ConcatOp[A1,A2](a1: TypedExpressionNode[A1], a2: TypedExpressionNode[A2]) 
 class NonNumericalCoalesce[A1,A2](val a1: NonNumericalExpression[A1], val a2: NonNumericalExpression[A2], op: String) extends BinaryOperatorNode(a1,a2, op)
 
 class NonNumericalTypeConversion[A](e: ExpressionNode)(implicit val mapper: OutMapper[A]) extends TypeConversion(e) with NonNumericalExpression[A]
+
+/**
+ * SQL allows operators are 'null agnostic', i.e. where a.z = 4 is valid
+ * even if z is Option[Int]. this class is meant for conversions like :
+ *  
+ *   NonNumericalExpression[Option[A]]) --> NonNumericalExpression[A]
+ */
+class NonNumericalInputOnlyTypeConversion[A](e: ExpressionNode) extends TypeConversion(e) with NonNumericalExpression[A] {
+   override def mapper: OutMapper[A] = error(
+      "Bug ! implicit conversion 'emulateSqlTyping1' is not supposed to get triggered in AST nodes participating in ResulSet extraction")
+}
+
+class NumericalInputOnlyTypeConversion[A](e: ExpressionNode) extends TypeConversion(e) with NumericalExpression[A] {
+   override def mapper: OutMapper[A] = error(
+      "Bug ! implicit conversion 'emulateSqlTyping1' is not supposed to get triggered in AST nodes participating in ResulSet extraction")
+}
 
 
 trait NvlNode {
@@ -366,6 +382,10 @@ trait TypeArithmetic extends FieldTypes {
   implicit def nnCoalesce3[A](e: NonNumericalCoalesce[Option[A],A]) = new NonNumericalTypeConversion[Option[A]](e)(e.a1.mapper)
   implicit def nnCoalesce4[A](e: NonNumericalCoalesce[Option[A],Option[A]]) = new NonNumericalTypeConversion[Option[A]](e)(e.a2.mapper)
 
+  implicit def emulateSqlTyping1[A](e: NonNumericalExpression[Option[A]]): NonNumericalExpression[A] = new NonNumericalInputOnlyTypeConversion(e)
+
+  implicit def emulateSqlTyping2[A](e: NumericalExpression[Option[A]]): NumericalExpression[A] = new NumericalInputOnlyTypeConversion(e)
+  
   protected def mapByte2ByteType(b:Byte): ByteType
   protected def mapInt2IntType(i: Int): IntType
   protected def mapString2StringType(s: String): StringType
@@ -375,6 +395,8 @@ trait TypeArithmetic extends FieldTypes {
   protected def mapLong2LongType(l: Long): LongType
   protected def mapBoolean2BooleanType(b: Boolean): BooleanType
   protected def mapDate2DateType(b: Date): DateType
+  protected def mapTimestamp2TimestampType(b: Timestamp): TimestampType
+  //protected def mapInt2EnumerationValueType(b: Int): EnumerationValueType    
 
   protected implicit def createOutMapperByteType: OutMapper[ByteType] = new OutMapper[ByteType] {
     def doMap(rs: ResultSet) = mapByte2ByteType(rs.getByte(index))
@@ -420,6 +442,15 @@ trait TypeArithmetic extends FieldTypes {
     def doMap(rs: ResultSet) = mapDate2DateType(rs.getDate(index))
     def sample = sampleDate
   }
+
+  protected implicit def createOutMapperTimestampType: OutMapper[TimestampType] = new OutMapper[TimestampType] {
+    def doMap(rs: ResultSet) = mapTimestamp2TimestampType(rs.getTimestamp(index))
+    def sample = sampleTimestamp
+  }
+//  protected implicit def createOutMapperEnumerationValueType: OutMapper[EnumerationValueType] = new OutMapper[EnumerationValueType] {
+//    def doMap(rs: ResultSet) = mapInt2EnumerationValueType(rs.getInt(index))
+//    def sample = sampleEnumerationValueType
+//  }
 
   protected implicit def createOutMapperByteTypeOption: OutMapper[Option[ByteType]] = new OutMapper[Option[ByteType]] {
     def doMap(rs: ResultSet) = {
@@ -518,5 +549,16 @@ trait TypeArithmetic extends FieldTypes {
         Some(v)
     }
     def sample = Some(sampleDate)
+  }
+
+  protected implicit def createOutMapperTimestampTypeOption: OutMapper[Option[TimestampType]] = new OutMapper[Option[TimestampType]] {
+    def doMap(rs: ResultSet) = {
+      val v = mapTimestamp2TimestampType(rs.getTimestamp(index))
+      if(rs.wasNull)
+        None
+      else
+        Some(v)
+    }
+    def sample = Some(sampleTimestamp)
   }  
 }

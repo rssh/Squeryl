@@ -20,7 +20,9 @@ import java.lang.reflect.{Field, Method}
 import java.sql.ResultSet
 import java.math.BigDecimal
 import org.squeryl.annotations.{ColumnBase, Column}
-
+import org.squeryl.{Session, KeyedEntity}
+import org.squeryl.dsl.ast.{ConstantExpressionNode, TypedExpressionNode}
+import collection.mutable.{HashMap, HashSet, ArrayBuffer}
 
 class FieldMetaData(
         val parentMetaData: PosoMetaData[_],
@@ -34,7 +36,115 @@ class FieldMetaData(
         setter: Option[Method],
         field:  Option[Field],
         columnAnnotation: Option[Column],
-        val isOptimisticCounter: Boolean) {
+        val isOptimisticCounter: Boolean,
+        val sampleValue: AnyRef) {
+
+  def isEnumeration = {
+    classOf[Enumeration#Value].isAssignableFrom(wrappedFieldType)
+  }
+
+  def canonicalEnumerationValueFor(id: Int) =
+    if(sampleValue == null) {
+      error("classes with Enumerations must have a zero param constructor that assigns a sample to the enumeration field")
+    }
+    else {
+
+      val svE =
+        if(sampleValue.isInstanceOf[Option[_]])
+          sampleValue.asInstanceOf[Option[Enumeration#Value]].get
+        else
+          sampleValue.asInstanceOf[Enumeration#Value]
+      
+      val m = svE.getClass.getField("$outer")
+
+      val enu = m.get(svE).asInstanceOf[Enumeration]
+
+      val r = enu.values.find(_.id == id).get
+
+      r
+    }
+
+  /**
+   * This field is mutable only by the Schema trait, and only during the Schema instantiation,
+   * so it can safely be considered immutable (read only) by the columnAttributes accessor 
+   */
+  private val _columnAttributes = new HashSet[ColumnAttribute]
+
+
+  private [squeryl] def _clearColumnAttributes = {
+    _columnAttributes.clear
+  }
+
+  private [squeryl] def _addColumnAttribute(ca: ColumnAttribute) =
+      _columnAttributes.add(ca)
+
+  /**
+   * In some circumstances (like in the test suite) a Schema instance must run on multiple database types,
+   * this Map keeps the sequence names 'per schema'
+   */
+  private val _sequenceNamePerDBAdapter = new HashMap[Class[_],String]
+
+  def sequenceName: String = {
+
+    val ai = _columnAttributes.find(_.isInstanceOf[AutoIncremented]).
+      getOrElse(error(this + " is not declared as autoIncremented, hence it has no sequenceName")).
+        asInstanceOf[AutoIncremented]
+
+    if(ai.nameOfSequence != None) {
+      return ai.nameOfSequence.get
+    }
+
+    synchronized {
+      val c = Session.currentSession.databaseAdapter.getClass
+
+      val s = _sequenceNamePerDBAdapter.get(c)
+
+      if(s != None)
+        return s.get
+
+      val s0 = Session.currentSession.databaseAdapter.createSequenceName(this)
+      
+      _sequenceNamePerDBAdapter.put(c, s0)
+
+      return s0
+    }
+  }
+
+  def isIdFieldOfKeyedEntity =
+    classOf[KeyedEntity[Any]].isAssignableFrom(parentMetaData.clasz) &&
+    nameOfProperty == "id"
+
+  if(isIdFieldOfKeyedEntity) {
+    schema.defaultColumnAttributesForKeyedEntityId.foreach(ca => {
+
+      if(ca.isInstanceOf[AutoIncremented] && ! (wrappedFieldType.isAssignableFrom(classOf[java.lang.Long]) || wrappedFieldType.isAssignableFrom(classOf[java.lang.Integer])))
+        error("Schema " + schema.getClass.getName + " has method defaultColumnAttributesForKeyedEntityId returning AutoIncremented \nfor " +
+          " all KeyedEntity tables, while class " + parentMetaData.clasz.getName +
+          "\n has it's id field of type " + fieldType.getName + ", that is neither an Int or a Long, \n the only two types that can " +
+          "be auto incremented. Tables of this class must redefine the attributes of the id field using Shema.declareColumnAttributes\n" +
+          " within the schema definition (" + schema.getClass.getName + ").")
+
+      _addColumnAttribute(ca)
+    })
+  }
+
+  private [squeryl] var _defaultValue: Option[ConstantExpressionNode[_]] = None
+
+  def columnAttributes: Iterable[ColumnAttribute] = _columnAttributes
+
+  def defaultValue: Option[ConstantExpressionNode[_]] = _defaultValue
+
+  /**
+   * The db column type declaration overriden in the schema, if None, it means that it is the default value for
+   * the adapter (see Correspondance of field types to database column types http://squeryl.org/schema-definition.html)  
+   */
+  def explicitDbTypeDeclaration: Option[String] = {
+    val dbt = _columnAttributes.find(_.isInstanceOf[DBType])
+    if(dbt == None)
+      None
+    else
+      Some(dbt.get.asInstanceOf[DBType].declaration)
+  }
 
   def isCustomType = customTypeFactory != None
 
@@ -103,11 +213,11 @@ class FieldMetaData(
       else
         fieldType.getName)  
 
-  lazy val isPrimaryKey =
-    parentMetaData.primaryKey != None &&
-    this == parentMetaData.primaryKey.get
+  def isPrimaryKey =
+    columnAttributes.exists(_.isInstanceOf[PrimaryKey])
 
-  var isAutoIncremented = false
+  def isAutoIncremented =
+    columnAttributes.exists(_.isInstanceOf[AutoIncremented])
 
   /**
    * gets the value of the field from the object.
@@ -148,7 +258,13 @@ class FieldMetaData(
   def set(target: AnyRef, v: AnyRef) = {
     try {
       val v0:AnyRef =
-        if(customTypeFactory == None)
+        if(isEnumeration) {
+          if(v != null)
+            canonicalEnumerationValueFor(v.asInstanceOf[java.lang.Integer].intValue)
+          else
+            null
+        }
+        else if(customTypeFactory == None)
           v
         else {
           val f = customTypeFactory.get
@@ -217,6 +333,7 @@ object FieldMetaData {
     def handleBigDecimalType(fmd: Option[FieldMetaData]) = true
     def handleTimestampType = true
     def handleBinaryType = true
+    def handleEnumerationValueType = true
     def handleUnknownType(c: Class[_]) =
       c.isAssignableFrom(classOf[Some[_]]) ||
       classOf[Product1[Any]].isAssignableFrom(c)
@@ -257,6 +374,8 @@ object FieldMetaData {
 
       if(v != null && v == None) // can't deduce the type from None in this case the Annotation
         v = null         //needs to tell us the type, if it doesn't it will a few lines bellow
+
+      val constructorSuppliedDefaultValue = v
 
       var customTypeFactory: Option[AnyRef=>Product1[Any]] = None
 
@@ -309,7 +428,8 @@ object FieldMetaData {
         setter,
         field,
         colAnnotation,
-        isOptimisticCounter)
+        isOptimisticCounter,
+        constructorSuppliedDefaultValue)
     }
   }
 
@@ -352,6 +472,7 @@ object FieldMetaData {
     def handleBigDecimalType(fmd: Option[FieldMetaData]) = fmd.get.schema.defaultSizeOfBigDecimal._1
     def handleTimestampType = -1
     def handleBinaryType = 255
+    def handleEnumerationValueType = 4
     def handleUnknownType(c: Class[_]) = error("Cannot assign field length for " + c.getName)
   }
 
@@ -368,7 +489,13 @@ object FieldMetaData {
     def handleBigDecimalType(fmd: Option[FieldMetaData]) = new scala.math.BigDecimal(java.math.BigDecimal.ZERO)
     def handleTimestampType = new java.sql.Timestamp(0)
     def handleBinaryType = new Array[Byte](0)
+    def handleEnumerationValueType = DummyE.Z
     def handleUnknownType(c: Class[_]) = null
+  }
+
+  object DummyE extends Enumeration {
+    type DummyE = Value
+    val Z = Value
   }
 
   private val _mapper = new FieldTypeHandler[(ResultSet,Int)=>AnyRef] {
@@ -403,6 +530,7 @@ object FieldMetaData {
     def handleBigDecimalType(fmd: Option[FieldMetaData]) = _bigDecM
     def handleTimestampType = _timestampM
     def handleBinaryType = _binaryM
+    def handleEnumerationValueType = _intM
 
     def handleUnknownType(c: Class[_]) =
       error("field type " + c.getName + " is not supported")
