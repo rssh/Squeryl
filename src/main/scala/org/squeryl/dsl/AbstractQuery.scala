@@ -12,23 +12,25 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl
 
-import ast.{QueryableExpressionNode, ViewExpressionNode, ExpressionNode, QueryExpressionNode}
+import ast._
 import internal.{InnerJoinedQueryable, OuterJoinedQueryable}
 import java.sql.ResultSet
 import org.squeryl.internals._
 import org.squeryl.{View, Queryable, Session, Query}
 import collection.mutable.ArrayBuffer
+import org.squeryl.logging._
+import java.io.Closeable
 
 abstract class AbstractQuery[R](val isRoot:Boolean) extends Query[R] {
 
-  var selectDistinct = false
+  private [squeryl] var selectDistinct = false
   
-  var isForUpdate = false
+  private [squeryl] var isForUpdate = false
 
-  var page: Option[(Int,Int)] = None
+  private [squeryl] var page: Option[(Int,Int)] = None
 
 
   val resultSetMapper = new ResultSetMapper
@@ -39,6 +41,32 @@ abstract class AbstractQuery[R](val isRoot:Boolean) extends Query[R] {
     rsm.pushYieldedValues(rs)
     val r = invokeYield(rsm, rs)
     r
+  }
+
+  /**
+   * Builds the AST tree of the this Query, *some state mutation of the AST nodes occurs
+   * during AST construction, for example, the parent child relationship is set by this method,
+   * unique IDs of node that needs them for example.
+   *
+   * After this call, the query (and it's AST) becomes immutable by virtue of the unaccessibility
+   * of it's public methods 
+   */
+  val definitionSite: Option[StackTraceElement] =
+    if(!isRoot) None
+    else Some(_deduceDefinitionSite)
+
+  private def _deduceDefinitionSite: StackTraceElement = {
+    val st = Thread.currentThread.getStackTrace
+    var i = 1
+    while(i < st.length) {
+      val e = st(i)
+      val cn = e.getClassName
+      if((cn.startsWith("org.squeryl.") && (!cn.startsWith("org.squeryl.tests."))) || cn.startsWith("scala."))
+        i = i + 1
+      else
+        return e
+    }
+    new StackTraceElement("unknown", "unknown", "unknown", -1)
   }
 
   protected def buildAst(qy: QueryYield[R], subQueryables: SubQueryable[_]*) = {
@@ -65,12 +93,22 @@ abstract class AbstractQuery[R](val isRoot:Boolean) extends Query[R] {
         views.append(sq.node.asInstanceOf[ViewExpressionNode[_]])
 
     for(sq <- subQueryables)
-      if(sq.isQuery)
-        subQueries.append(sq.node.asInstanceOf[QueryExpressionNode[_]])
+      if(sq.isQuery) {
+        val z = sq.node.asInstanceOf[QueryExpressionNode[_]]
+        if(! z.isUseableAsSubquery)
+          org.squeryl.internals.Utils.throwError("Sub query returns a primitive type or a Tuple of primitive type, and therefore is not useable as a subquery in a from or join clause, see \nhttp://squeryl.org/limitations.html")
+        subQueries.append(z)
+      }
     
     val qen = new QueryExpressionNode[R](this, qy, subQueries, views)
     val (sl,d) = qy.invokeYieldForAst(qen, resultSetMapper)
     qen.setOutExpressionNodesAndSample(sl, d)
+    qen.propagateOuterScope()
+
+//    sl.filter(_.isInstanceOf[ExportedSelectElement]).
+//       map(_.asInstanceOf[ExportedSelectElement]).
+//       foreach(_.buildReferencePath)
+
     qen
   }
 
@@ -115,24 +153,45 @@ abstract class AbstractQuery[R](val isRoot:Boolean) extends Query[R] {
 
   private def _dbAdapter = Session.currentSession.databaseAdapter
 
-  override def iterator = new Iterator[R] {
+  override def iterator = new Iterator[R] with Closeable {
 
     val sw = new StatementWriter(false, _dbAdapter)
     ast.write(sw)
     val s = Session.currentSession
+    val beforeQueryExecute = System.currentTimeMillis
     val (rs, stmt) = _dbAdapter.executeQuery(s, sw)
+
+    lazy val statEx = new StatementInvocationEvent(definitionSite.get, beforeQueryExecute, System.currentTimeMillis, -1, sw.statement)
+
+    if(s.statisticsListener != None)
+      s.statisticsListener.get.queryExecuted(statEx)
+
+    s._addStatement(stmt) // if the iteration doesn't get completed, we must hang on to the statement to clean it up at session end.
+    s._addResultSet(rs) // same for the result set
     
     var _nextCalled = false;
     var _hasNext = false;
 
+    var rowCount = 0
+    
+    def close {
+      stmt.close
+      rs.close
+    }
+
     def _next = {
       _hasNext = rs.next
 
-      if(!_hasNext) {// close it ASAP
+      if(!_hasNext) {// close it since we've completed the iteration
         Utils.close(rs)
         stmt.close
-      }
 
+        if(s.statisticsListener != None) {
+          s.statisticsListener.get.resultSetIterationEnded(statEx.uuid, System.currentTimeMillis, rowCount, true)
+        }
+      }
+      
+      rowCount = rowCount + 1
       _nextCalled = true
     }
 
@@ -146,7 +205,7 @@ abstract class AbstractQuery[R](val isRoot:Boolean) extends Query[R] {
       if(!_nextCalled)
         _next
       if(!_hasNext)
-        error("next called with no rows available")
+        org.squeryl.internals.Utils.throwError("next called with no rows available")
       _nextCalled = false
 
       if(s.isLoggingEnabled)
@@ -171,19 +230,22 @@ abstract class AbstractQuery[R](val isRoot:Boolean) extends Query[R] {
       val oqr = q.asInstanceOf[OptionalQueryable[U]]
       val sq = createSubQueryable[U](oqr.queryable)
       sq.node.inhibited = oqr.inhibited
-      new SubQueryable(q, Some(sq.sample).asInstanceOf[U], sq.resultSetMapper, sq.isQuery, sq.node)
+      val oqCopy = new OptionalQueryable(sq.queryable)
+      oqCopy.inhibited = oqr.inhibited
+      new SubQueryable(oqCopy.asInstanceOf[Queryable[U]], Some(sq.sample).asInstanceOf[U], sq.resultSetMapper, sq.isQuery, sq.node)
     }
     else if(q.isInstanceOf[OuterJoinedQueryable[U]]) {
       val ojq = q.asInstanceOf[OuterJoinedQueryable[U]]
       val sq = createSubQueryable[U](ojq.queryable)
       sq.node.joinKind = Some((ojq.leftRightOrFull, "outer"))
-      new SubQueryable(ojq.queryable, Some(sq.sample).asInstanceOf[U], sq.resultSetMapper, sq.isQuery, sq.node)
+      sq.node.inhibited = ojq.inhibited
+      new SubQueryable(sq.queryable, Some(sq.sample).asInstanceOf[U], sq.resultSetMapper, sq.isQuery, sq.node)
     }
     else if(q.isInstanceOf[InnerJoinedQueryable[U]]) {
       val ijq = q.asInstanceOf[InnerJoinedQueryable[U]]
       val sq = createSubQueryable[U](ijq.queryable)
       sq.node.joinKind = Some((ijq.leftRightOrFull, "inner"))
-      new SubQueryable(ijq.queryable, sq.sample, sq.resultSetMapper, sq.isQuery, sq.node)
+      new SubQueryable(sq.queryable, sq.sample, sq.resultSetMapper, sq.isQuery, sq.node)
     }
     else if(q.isInstanceOf[DelegateQuery[U]]) {
       createSubQueryable(q.asInstanceOf[DelegateQuery[U]].q)
@@ -204,7 +266,11 @@ abstract class AbstractQuery[R](val isRoot:Boolean) extends Query[R] {
     def give(rs: ResultSet): U =
       if(node.joinKind != None) {
         if(node.isOuterJoined) {
-           if(resultSetMapper.isNoneInOuterJoin(rs))
+
+          val isNoneInOuterJoin =
+            (!isQuery) && resultSetMapper.isNoneInOuterJoin(rs)
+
+           if(isNoneInOuterJoin)
              None.asInstanceOf[U]
            else
              Some(queryable.give(resultSetMapper, rs)).asInstanceOf[U]
@@ -212,7 +278,7 @@ abstract class AbstractQuery[R](val isRoot:Boolean) extends Query[R] {
         else
           queryable.give(resultSetMapper, rs)
       }
-      else if((node.isRightJoined || node.isOuterJoinedDEPRECATED) && resultSetMapper.isNoneInOuterJoin(rs))
+      else if((node.isRightJoined) && resultSetMapper.isNoneInOuterJoin(rs))
         sample
       else
         queryable.give(resultSetMapper, rs)

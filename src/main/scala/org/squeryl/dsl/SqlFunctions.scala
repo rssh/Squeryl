@@ -12,11 +12,13 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl
 
 import ast._
 import org.squeryl.internals.{StatementWriter, OutMapper}
+import org.squeryl.Query
+
 /*
 
 
@@ -50,10 +52,13 @@ trait SqlFunctions  {
 
   def not(b: LogicalBoolean) = new FunctionNode("not", b) with LogicalBoolean
 
-  def upper[A](s: StringExpression[A]) = new FunctionNode("upper", Some(s.mapper), Seq(s)) with StringExpression[A]
+  def upper[A](s: StringExpression[A])(implicit m: OutMapper[A]) = new FunctionNode("upper", Some(m), Seq(s)) with StringExpression[A]
 
-  def lower[A](s: StringExpression[A]) = new FunctionNode("lower", Some(s.mapper), Seq(s)) with StringExpression[A]
+  def lower[A](s: StringExpression[A])(implicit m: OutMapper[A]) = new FunctionNode("lower", Some(m), Seq(s)) with StringExpression[A]
 
+  def exists[A](query: Query[A]) = new ExistsExpression(query.copy(false).ast, "exists")
+
+  def notExists[A](query: Query[A]) = new ExistsExpression(query.copy(false).ast, "not exists")
 
   class CountFunction(_args: Seq[ExpressionNode], isDistinct: Boolean)
     extends FunctionNode[LongType](

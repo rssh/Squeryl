@@ -12,14 +12,14 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl
 
 
 import dsl.ast._
 import dsl._
 import internals.FieldReferenceLinker
-import java.util.Date
+import java.util.{ Date, UUID }
 import java.sql.Timestamp
 
 /**
@@ -62,6 +62,10 @@ trait PrimitiveTypeMode extends QueryDsl {
   type TimestampType = Timestamp
 
   type EnumerationValueType = Enumeration#Value
+
+  type UuidType = UUID
+
+  type BinaryType = Array[Byte]
 
   //TODO: consider spliting createLeafNodeOfScalarIntType in two factory methods : createConstantOfXXXType and createReferenceOfXXXType 
   
@@ -181,6 +185,22 @@ trait PrimitiveTypeMode extends QueryDsl {
         new SelectElementReference[Option[Boolean]](n) with BooleanExpression[Option[Boolean]]
     }
 
+  def createLeafNodeOfScalarBinaryType(i: BinaryType) =
+    FieldReferenceLinker.takeLastAccessedFieldReference match {
+      case None =>
+        new ConstantExpressionNode[BinaryType](i) with BinaryExpression[BinaryType]
+      case Some(n:SelectElement) =>
+        new SelectElementReference[BinaryType](n) with BinaryExpression[BinaryType]
+    }
+
+  def createLeafNodeOfScalarBinaryOptionType(i: Option[BinaryType]) =
+    FieldReferenceLinker.takeLastAccessedFieldReference match {
+      case None =>
+        new ConstantExpressionNode[Option[BinaryType]](i) with BinaryExpression[Option[BinaryType]]
+      case Some(n:SelectElement) =>
+        new SelectElementReference[Option[BinaryType]](n) with BinaryExpression[Option[BinaryType]]
+    }
+
   def createLeafNodeOfScalarDateType(i: Date) =
     FieldReferenceLinker.takeLastAccessedFieldReference match {
       case None =>
@@ -216,7 +236,7 @@ trait PrimitiveTypeMode extends QueryDsl {
   def createLeafNodeOfEnumExpressionType[A](e: EnumerationValueType): EnumExpression[Enumeration#Value] =
     FieldReferenceLinker.takeLastAccessedFieldReference match {
       case None =>
-        new ConstantExpressionNode[Enumeration#Value](e) with EnumExpression[Enumeration#Value]
+        new ConstantExpressionNode[Enumeration#Value](e,Some(outMapperFromEnumValue(e))) with EnumExpression[Enumeration#Value]
       case Some(n:SelectElement) =>
         new SelectElementReference[Enumeration#Value](n)(n.createEnumerationMapper) with  EnumExpression[Enumeration#Value]
     }
@@ -224,9 +244,25 @@ trait PrimitiveTypeMode extends QueryDsl {
   def createLeafNodeOfEnumExpressionOptionType[A](e: Option[EnumerationValueType]): EnumExpression[Option[Enumeration#Value]] =
     FieldReferenceLinker.takeLastAccessedFieldReference match {
       case None =>
-        new ConstantExpressionNode[Option[Enumeration#Value]](e) with EnumExpression[Option[Enumeration#Value]]
+        new ConstantExpressionNode[Option[Enumeration#Value]](e, outMapperOptionFromOptionEnumValue(e)) with EnumExpression[Option[Enumeration#Value]]
       case Some(n:SelectElement) =>
         new SelectElementReference[Option[Enumeration#Value]](n)(n.createEnumerationOptionMapper) with  EnumExpression[Option[Enumeration#Value]]
+    }
+
+  def createLeafNodeOfScalarUuidType(d: UUID) =
+    FieldReferenceLinker.takeLastAccessedFieldReference match {
+      case None =>
+        new ConstantExpressionNode[UUID](d) with UuidExpression[UUID]
+      case Some(n:SelectElement) =>
+        new SelectElementReference[UUID](n) with UuidExpression[UUID]
+    }
+
+  def createLeafNodeOfScalarUuidOptionType(d: Option[UUID]) =
+    FieldReferenceLinker.takeLastAccessedFieldReference match {
+      case None =>
+        new ConstantExpressionNode[Option[UUID]](d) with UuidExpression[Option[UUID]]
+      case Some(n:SelectElement) =>
+        new SelectElementReference[Option[UUID]](n) with UuidExpression[Option[UUID]]
     }
 
   protected def mapByte2ByteType(i: Byte) = i
@@ -240,6 +276,11 @@ trait PrimitiveTypeMode extends QueryDsl {
   protected def mapDate2DateType(b: Date) = b
   protected def mapTimestamp2TimestampType(b: Timestamp) = b
   //protected def mapInt2EnumerationValueType(b: Int): EnumerationValueType
+  protected def mapObject2UuidType(u: AnyRef) = u match {
+    case u: UUID => u
+    case s: String => UUID.fromString(s)
+  }
+  protected def mapBinary2BinaryType(d: Array[Byte]) = d
 
   protected implicit val sampleByte: ByteType = 0xF.byteValue
   protected implicit val sampleInt: IntType = 0
@@ -252,6 +293,8 @@ trait PrimitiveTypeMode extends QueryDsl {
   protected implicit val sampleDate: DateType = new Date
   protected implicit def sampleTimestamp: TimestampType = new Timestamp(0)
   //protected implicit def sampleEnumerationValueType: EnumerationValueType = DummyEnum.DummyEnumerationValue
+  protected implicit val sampleUuid: UUID = UUID.fromString("00000000-0000-0000-0000-000000000000")
+  protected implicit val sampleBinary: BinaryType = Array[Byte](0)
 }
 
 object DummyEnum extends Enumeration {

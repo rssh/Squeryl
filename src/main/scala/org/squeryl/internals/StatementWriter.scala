@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.internals
 
 import org.squeryl.dsl.ast.{ExpressionNode}
@@ -30,6 +30,8 @@ class StatementWriter(val isForDisplay: Boolean, val databaseAdapter: DatabaseAd
   def this(databaseAdapter: DatabaseAdapter) = this(false, databaseAdapter)
 
   val scope = new HashSet[String]
+
+  var inhibitAliasOnSelectElementReference = false
 
   protected val _paramList = new ArrayBuffer[AnyRef]
 
@@ -155,4 +157,6 @@ class StatementWriter(val isForDisplay: Boolean, val databaseAdapter: DatabaseAd
     u
     unindent(width)
   }
+
+  def quoteName(s: String) = databaseAdapter.quoteName(s)
 }

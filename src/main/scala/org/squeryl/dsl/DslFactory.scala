@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl
 
 import ast._
@@ -46,12 +46,18 @@ trait DslFactory
   protected def createLeafNodeOfScalarBooleanType(s: BooleanType): BooleanExpression[BooleanType]
   protected def createLeafNodeOfScalarBooleanOptionType(s: Option[BooleanType]): BooleanExpression[Option[BooleanType]]
 
+  protected def createLeafNodeOfScalarBinaryType(s: BinaryType): BinaryExpression[BinaryType]
+  protected def createLeafNodeOfScalarBinaryOptionType(s: Option[BinaryType]): BinaryExpression[Option[BinaryType]]
+
   protected def createLeafNodeOfScalarDateType(d: DateType): DateExpression[DateType]
   protected def createLeafNodeOfScalarDateOptionType(d: Option[DateType]): DateExpression[Option[DateType]]
 
   protected def createLeafNodeOfScalarTimestampType(d: TimestampType): DateExpression[TimestampType]
   protected def createLeafNodeOfScalarTimestampOptionType(d: Option[TimestampType]): DateExpression[Option[TimestampType]]
-  
+
+  protected def createLeafNodeOfScalarUuidType(d: UuidType): UuidExpression[UuidType]
+  protected def createLeafNodeOfScalarUuidOptionType(d: Option[UuidType]): UuidExpression[Option[UuidType]]
+
   protected def createLeafNodeOfEnumExpressionType[A](e: EnumerationValueType): EnumExpression[EnumerationValueType]
   protected def createLeafNodeOfEnumExpressionOptionType[A](e: Option[EnumerationValueType]): EnumExpression[Option[EnumerationValueType]]
 
@@ -99,30 +105,44 @@ trait DslFactory
   implicit def enum2OptionEnumNode[A <: Option[EnumerationValueType]](e: A): EnumExpression[Option[A]] =
     createLeafNodeOfEnumExpressionOptionType(e).asInstanceOf[EnumExpression[Option[A]]]
 
+  implicit def uuid2ScalarUuid(u: UuidType) = createLeafNodeOfScalarUuidType(u)
+
+  implicit def optionUuid2ScalarUuid(u: Option[UuidType]) = createLeafNodeOfScalarUuidOptionType(u)
+
+  implicit def binary2ScalarBinary(b: BinaryType) = createLeafNodeOfScalarBinaryType(b)
+
+  implicit def binaryOption2ScalarBinaryOption(b: Option[BinaryType]) = createLeafNodeOfScalarBinaryOptionType(b)
+  
   // List Conversion implicits don't vary with the choice of
   // column/field types, so they don't need to be overridable factory methods :
 
-  //TODO: replace lists with NonNumerical and Numerical for type inference that is more SQL like  
-  implicit def traversableOfInt2ListInt(l: Traversable[IntType]) =
-    new ConstantExpressionNodeList[IntType](l) with ListInt
+  implicit def traversableOfNumericalExpressionList[A <% NumericalExpression[_]](l: Traversable[A]) =
+    new RightHandSideOfIn[NumericalExpression[A]](new ConstantExpressionNodeList[Any](l))
 
-  implicit def traversableOfDouble2ListDouble(l: Traversable[DoubleType]) =
-    new ConstantExpressionNodeList[DoubleType](l) with ListDouble
+  implicit def traversableOfEnumerationValue2ListEnumerationValue[E <: Enumeration#Value](l: Traversable[E]) = 
+    new RightHandSideOfIn[E](new ConstantExpressionNodeList[E](l)) 
 
-  implicit def traversableOfBigDecimal2ListBigDecimal(l: Traversable[BigDecimalType]) =
-    new ConstantExpressionNodeList[BigDecimalType](l) with ListBigDecimal
-
-  implicit def traversableOfFloat2ListFloat(l: Traversable[FloatType]) =
-    new ConstantExpressionNodeList[FloatType](l) with ListFloat
-
-  implicit def traversableOfLong2ListLong(l: Traversable[LongType]) =
-    new ConstantExpressionNodeList[LongType](l) with ListLong
+// TODO : find out why this generalized conv for NonNumericals won't work (looks like a scalac bug...):
+//  implicit def traversableOfNonNumercalExpressionList[A <% NonNumericalExpression[_]](l: Traversable[A]) =
+//    new RightHandSideOfIn[NonNumericalExpression[A]](new ConstantExpressionNodeList[Any](l))
 
   implicit def traversableOfString2ListString(l: Traversable[StringType]) =
-    new ConstantExpressionNodeList[StringType](l) with ListString
+    new RightHandSideOfIn[StringType](new ConstantExpressionNodeList[StringType](l))
+
+  implicit def traversableOfUuid2ListUuid(l: Traversable[UuidType]) =
+    new RightHandSideOfIn[UuidType](new ConstantExpressionNodeList[UuidType](l))
+
+  implicit def traversableOfString2OptionListString(l: Traversable[StringType]) =
+    new RightHandSideOfIn[Option[StringType]](new ConstantExpressionNodeList[StringType](l))
 
   implicit def traversableOfDate2ListDate(l: Traversable[DateType]) =
-    new ConstantExpressionNodeList[DateType](l) with ListDate
+    new RightHandSideOfIn[DateType](new ConstantExpressionNodeList[DateType](l))
+
+  implicit def traversableOfDate2OptionListDate(l: Traversable[DateType]) =
+    new RightHandSideOfIn[Option[DateType]](new ConstantExpressionNodeList[DateType](l))
+
+  implicit def traversableOfUuidOptionList(l: Traversable[UuidType]) =
+    new RightHandSideOfIn[Option[UuidType]](new ConstantExpressionNodeList[UuidType](l))
 
   implicit def typedExpression2OrderByArg[E <% TypedExpressionNode[_]](e: E) = new OrderByArg(e)
 

@@ -12,12 +12,12 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl
 
 import ast._
 import org.squeryl.internals._
-import java.util.Date
+import java.util.{Date, UUID}
 import java.sql.{Timestamp, ResultSet}
 
 class NumericalTypeConversion[A](e: ExpressionNode)(implicit val mapper: OutMapper[A]) extends TypeConversion(e) with NumericalExpression[A]
@@ -46,12 +46,12 @@ class NonNumericalTypeConversion[A](e: ExpressionNode)(implicit val mapper: OutM
  *   NonNumericalExpression[Option[A]]) --> NonNumericalExpression[A]
  */
 class NonNumericalInputOnlyTypeConversion[A](e: ExpressionNode) extends TypeConversion(e) with NonNumericalExpression[A] {
-   override def mapper: OutMapper[A] = error(
+   override def mapper: OutMapper[A] = org.squeryl.internals.Utils.throwError(
       "Bug ! implicit conversion 'emulateSqlTyping1' is not supposed to get triggered in AST nodes participating in ResulSet extraction")
 }
 
 class NumericalInputOnlyTypeConversion[A](e: ExpressionNode) extends TypeConversion(e) with NumericalExpression[A] {
-   override def mapper: OutMapper[A] = error(
+   override def mapper: OutMapper[A] = org.squeryl.internals.Utils.throwError(
       "Bug ! implicit conversion 'emulateSqlTyping1' is not supposed to get triggered in AST nodes participating in ResulSet extraction")
 }
 
@@ -323,28 +323,84 @@ trait TypeArithmetic extends FieldTypes {
   implicit def binaryOpConv99(op: BinaryDivOp[Option[DoubleType],Option[FloatType]]) = new NumericalTypeConversion[Option[DoubleType]](op)
   implicit def binaryOpConv100(op: BinaryDivOp[Option[DoubleType],Option[DoubleType]]) = new NumericalTypeConversion[Option[DoubleType]](op)
   implicit def binaryOpConv100bd(op: BinaryDivOp[Option[DoubleType],Option[BigDecimalType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  // BigDecimal binary ops
+  implicit def binaryOpConv101(op: BinaryAMSOp[BigDecimalType,ByteType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv102(op: BinaryAMSOp[BigDecimalType,IntType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv103(op: BinaryAMSOp[BigDecimalType,LongType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv104(op: BinaryAMSOp[BigDecimalType,FloatType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv105(op: BinaryAMSOp[BigDecimalType,DoubleType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv106(op: BinaryAMSOp[BigDecimalType,BigDecimalType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv107(op: BinaryAMSOp[BigDecimalType,Option[ByteType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv108(op: BinaryAMSOp[BigDecimalType,Option[IntType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv109(op: BinaryAMSOp[BigDecimalType,Option[LongType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv110(op: BinaryAMSOp[BigDecimalType,Option[FloatType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv111(op: BinaryAMSOp[BigDecimalType,Option[DoubleType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv112(op: BinaryAMSOp[BigDecimalType,Option[BigDecimalType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv113(op: BinaryAMSOp[Option[BigDecimalType],ByteType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv114(op: BinaryAMSOp[Option[BigDecimalType],IntType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv115(op: BinaryAMSOp[Option[BigDecimalType],LongType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv116(op: BinaryAMSOp[Option[BigDecimalType],FloatType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv117(op: BinaryAMSOp[Option[BigDecimalType],DoubleType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv118(op: BinaryAMSOp[Option[BigDecimalType],BigDecimalType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv119(op: BinaryAMSOp[Option[BigDecimalType],Option[ByteType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv120(op: BinaryAMSOp[Option[BigDecimalType],Option[IntType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv121(op: BinaryAMSOp[Option[BigDecimalType],Option[LongType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv122(op: BinaryAMSOp[Option[BigDecimalType],Option[FloatType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv123(op: BinaryAMSOp[Option[BigDecimalType],Option[DoubleType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv124(op: BinaryAMSOp[Option[BigDecimalType],Option[BigDecimalType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv101(op: BinaryDivOp[BigDecimalType,ByteType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv102(op: BinaryDivOp[BigDecimalType,IntType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv103(op: BinaryDivOp[BigDecimalType,LongType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv104(op: BinaryDivOp[BigDecimalType,FloatType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv105(op: BinaryDivOp[BigDecimalType,DoubleType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv106(op: BinaryDivOp[BigDecimalType,BigDecimalType]) = new NumericalTypeConversion[BigDecimalType](op)
+  implicit def binaryOpConv107(op: BinaryDivOp[BigDecimalType,Option[ByteType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv108(op: BinaryDivOp[BigDecimalType,Option[IntType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv109(op: BinaryDivOp[BigDecimalType,Option[LongType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv110(op: BinaryDivOp[BigDecimalType,Option[FloatType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv111(op: BinaryDivOp[BigDecimalType,Option[DoubleType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv112(op: BinaryDivOp[BigDecimalType,Option[BigDecimalType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv113(op: BinaryDivOp[Option[BigDecimalType],ByteType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv114(op: BinaryDivOp[Option[BigDecimalType],IntType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv115(op: BinaryDivOp[Option[BigDecimalType],LongType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv116(op: BinaryDivOp[Option[BigDecimalType],FloatType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv117(op: BinaryDivOp[Option[BigDecimalType],DoubleType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv118(op: BinaryDivOp[Option[BigDecimalType],BigDecimalType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv119(op: BinaryDivOp[Option[BigDecimalType],Option[ByteType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv120(op: BinaryDivOp[Option[BigDecimalType],Option[IntType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv121(op: BinaryDivOp[Option[BigDecimalType],Option[LongType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv122(op: BinaryDivOp[Option[BigDecimalType],Option[FloatType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv123(op: BinaryDivOp[Option[BigDecimalType],Option[DoubleType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  implicit def binaryOpConv124(op: BinaryDivOp[Option[BigDecimalType],Option[BigDecimalType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+
   // conversions for unary ops like Sin, Log(n,X) :
   implicit def unaryOpConv1(op: UnaryFloatOp[ByteType]) = new NumericalTypeConversion[FloatType](op)
   implicit def unaryOpConv2(op: UnaryFloatOp[IntType]) = new NumericalTypeConversion[FloatType](op)
   implicit def unaryOpConv3(op: UnaryFloatOp[LongType]) = new NumericalTypeConversion[DoubleType](op)
   implicit def unaryOpConv4(op: UnaryFloatOp[FloatType]) = new NumericalTypeConversion[FloatType](op)
   implicit def unaryOpConv5(op: UnaryFloatOp[DoubleType]) = new NumericalTypeConversion[DoubleType](op)
+  implicit def unaryOpConv5bd(op: UnaryFloatOp[BigDecimalType]) = new NumericalTypeConversion[BigDecimalType](op)
   implicit def unaryOpConv6(op: UnaryFloatOp[Option[ByteType]]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv7(op: UnaryFloatOp[Option[IntType]]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv8(op: UnaryFloatOp[Option[LongType]]) = new NumericalTypeConversion[Option[DoubleType]](op)
   implicit def unaryOpConv9(op: UnaryFloatOp[Option[FloatType]]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv10(op: UnaryFloatOp[Option[DoubleType]]) = new NumericalTypeConversion[Option[DoubleType]](op)
+  implicit def unaryOpConv11(op: UnaryFloatOp[Option[BigDecimalType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+
   // conversions for unary ops like Avg, Stdev :
   implicit def unaryOpConv1(op: UnaryAgregateFloatOp[ByteType]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv2(op: UnaryAgregateFloatOp[IntType]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv3(op: UnaryAgregateFloatOp[LongType]) = new NumericalTypeConversion[Option[DoubleType]](op)
   implicit def unaryOpConv4(op: UnaryAgregateFloatOp[FloatType]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv5(op: UnaryAgregateFloatOp[DoubleType]) = new NumericalTypeConversion[Option[DoubleType]](op)
+  implicit def unaryOpConv5bd(op: UnaryAgregateFloatOp[BigDecimalType]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
   implicit def unaryOpConv6(op: UnaryAgregateFloatOp[Option[ByteType]]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv7(op: UnaryAgregateFloatOp[Option[IntType]]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv8(op: UnaryAgregateFloatOp[Option[LongType]]) = new NumericalTypeConversion[Option[DoubleType]](op)
   implicit def unaryOpConv9(op: UnaryAgregateFloatOp[Option[FloatType]]) = new NumericalTypeConversion[Option[FloatType]](op)
   implicit def unaryOpConv10(op: UnaryAgregateFloatOp[Option[DoubleType]]) = new NumericalTypeConversion[Option[DoubleType]](op)
+  implicit def unaryOpConv11(op: UnaryAgregateFloatOp[Option[BigDecimalType]]) = new NumericalTypeConversion[Option[BigDecimalType]](op)
+  
   // conversions for unary ops like Min, Max :
   implicit def unaryOpConv1(op: UnaryAgregateLengthNeutralOp[ByteType]) = new NumericalTypeConversion[Option[ByteType]](op)
   implicit def unaryOpConv2(op: UnaryAgregateLengthNeutralOp[IntType]) = new NumericalTypeConversion[Option[IntType]](op)
@@ -366,10 +422,13 @@ trait TypeArithmetic extends FieldTypes {
   implicit def unaryOpConv14(op: UnaryAgregateLengthNeutralOp[Option[StringType]]) = new DateTypeConversion[Option[StringType]](op)
   implicit def unaryOpConv15(op: UnaryAgregateLengthNeutralOp[BooleanType]) = new BooleanTypeConversion[Option[BooleanType]](op)
   implicit def unaryOpConv16(op: UnaryAgregateLengthNeutralOp[Option[BooleanType]]) = new BooleanTypeConversion[Option[BooleanType]](op)
+  implicit def unaryOpConv17(op: UnaryAgregateLengthNeutralOp[TimestampType]) = new DateTypeConversion[Option[TimestampType]](op)(createOutMapperTimestampTypeOption)
+  implicit def unaryOpConv18(op: UnaryAgregateLengthNeutralOp[Option[TimestampType]]) = new DateTypeConversion[Option[TimestampType]](op)(createOutMapperTimestampTypeOption)
 
   implicit def nvl1(e: NvlFunctionNonNumerical[Option[DateType],DateType]) = new DateTypeConversion[DateType](e)
+  implicit def nvl4(e: NvlFunctionNonNumerical[Option[TimestampType], TimestampType]) = new DateTypeConversion[TimestampType](e)
   implicit def nvl2(e: NvlFunctionNonNumerical[Option[StringType],StringType]) = new StringTypeConversion[StringType](e)
-  implicit def nvl2(e: NvlFunctionNonNumerical[Option[BooleanType],BooleanType]) = new BooleanTypeConversion[BooleanType](e)
+  implicit def nvl3(e: NvlFunctionNonNumerical[Option[BooleanType],BooleanType]) = new BooleanTypeConversion[BooleanType](e)
 
   implicit def e2concat1[A1,A2](e: ConcatOp[A1,A2]) = new StringTypeConversion[StringType](e)(createOutMapperStringType)
   implicit def e2concat2[A1,A2](e: ConcatOp[A1,Option[A2]]) = new StringTypeConversion[Option[StringType]](e)(createOutMapperStringTypeOption)
@@ -378,9 +437,9 @@ trait TypeArithmetic extends FieldTypes {
 
   //Conversions for non numerical case statements and coalesce like functions :
   implicit def nnCoalesce1[A](e: NonNumericalCoalesce[A,A]) = new NonNumericalTypeConversion[A](e)(e.a1.mapper)
-  implicit def nnCoalesce2[A](e: NonNumericalCoalesce[A,Option[A]]) = new NonNumericalTypeConversion[Option[A]](e)(e.a2.mapper)
-  implicit def nnCoalesce3[A](e: NonNumericalCoalesce[Option[A],A]) = new NonNumericalTypeConversion[Option[A]](e)(e.a1.mapper)
-  implicit def nnCoalesce4[A](e: NonNumericalCoalesce[Option[A],Option[A]]) = new NonNumericalTypeConversion[Option[A]](e)(e.a2.mapper)
+  implicit def nnCoalesce2[A](e: NonNumericalCoalesce[A,Option[A]])(implicit f: OutMapper[Option[A]]) = new NonNumericalTypeConversion[Option[A]](e)(f)
+  implicit def nnCoalesce3[A](e: NonNumericalCoalesce[Option[A],A])(implicit f: OutMapper[Option[A]]) = new NonNumericalTypeConversion[Option[A]](e)(f)
+  implicit def nnCoalesce4[A](e: NonNumericalCoalesce[Option[A],Option[A]])(implicit f: OutMapper[Option[A]]) = new NonNumericalTypeConversion[Option[A]](e)(f)
 
   implicit def emulateSqlTyping1[A](e: NonNumericalExpression[Option[A]]): NonNumericalExpression[A] = new NonNumericalInputOnlyTypeConversion(e)
 
@@ -394,65 +453,76 @@ trait TypeArithmetic extends FieldTypes {
   protected def mapFloat2FloatType(d: Float): FloatType
   protected def mapLong2LongType(l: Long): LongType
   protected def mapBoolean2BooleanType(b: Boolean): BooleanType
+  protected def mapBinary2BinaryType(b: Array[Byte]): BinaryType
   protected def mapDate2DateType(b: Date): DateType
   protected def mapTimestamp2TimestampType(b: Timestamp): TimestampType
-  //protected def mapInt2EnumerationValueType(b: Int): EnumerationValueType    
+  protected def mapObject2UuidType(u: AnyRef): UuidType
+  //protected def mapInt2EnumerationValueType(b: Int): EnumerationValueType
 
-  protected implicit def createOutMapperByteType: OutMapper[ByteType] = new OutMapper[ByteType] {
+  implicit def createOutMapperByteType: OutMapper[ByteType] = new OutMapper[ByteType] {
     def doMap(rs: ResultSet) = mapByte2ByteType(rs.getByte(index))
     def sample = sampleByte
   }
   
-  protected implicit def createOutMapperIntType: OutMapper[IntType] = new OutMapper[IntType] {
+  implicit def createOutMapperIntType: OutMapper[IntType] = new OutMapper[IntType] {
     def doMap(rs: ResultSet) = mapInt2IntType(rs.getInt(index))
     def sample = sampleInt
   }
 
-  protected implicit def createOutMapperStringType: OutMapper[StringType] = new OutMapper[StringType] {
+  implicit def createOutMapperStringType: OutMapper[StringType] = new OutMapper[StringType] {
     def doMap(rs: ResultSet) = mapString2StringType(rs.getString(index))
     def sample = sampleString
   }
 
-  protected implicit def createOutMapperDoubleType: OutMapper[DoubleType] = new OutMapper[DoubleType] {
+  implicit def createOutMapperDoubleType: OutMapper[DoubleType] = new OutMapper[DoubleType] {
     def doMap(rs: ResultSet) = mapDouble2DoubleType(rs.getDouble(index))
     def sample = sampleDouble
   }
 
-  protected implicit def createOutMapperBigDecimalType: OutMapper[BigDecimalType] = new OutMapper[BigDecimalType] {
+  implicit def createOutMapperBigDecimalType: OutMapper[BigDecimalType] = new OutMapper[BigDecimalType] {
     def doMap(rs: ResultSet) = mapBigDecimal2BigDecimalType(new BigDecimal(rs.getBigDecimal(index)))
     def sample = sampleBigDecimal
   }
 
-  protected implicit def createOutMapperFloatType: OutMapper[FloatType] = new OutMapper[FloatType] {
+  implicit def createOutMapperFloatType: OutMapper[FloatType] = new OutMapper[FloatType] {
     def doMap(rs: ResultSet) = mapFloat2FloatType(rs.getFloat(index))
     def sample = sampleFloat
   }
 
-  protected implicit def createOutMapperLongType: OutMapper[LongType] = new OutMapper[LongType] {
+  implicit def createOutMapperLongType: OutMapper[LongType] = new OutMapper[LongType] {
     def doMap(rs: ResultSet) = mapLong2LongType(rs.getLong(index))
     def sample = sampleLong
   }
 
-  protected implicit def createOutMapperBooleanType: OutMapper[BooleanType] = new OutMapper[BooleanType] {
+  implicit def createOutMapperBooleanType: OutMapper[BooleanType] = new OutMapper[BooleanType] {
     def doMap(rs: ResultSet) = mapBoolean2BooleanType(rs.getBoolean(index))
     def sample = sampleBoolean
   }
 
-  protected implicit def createOutMapperDateType: OutMapper[DateType] = new OutMapper[DateType] {
+  implicit def createOutMapperBinaryType: OutMapper[BinaryType] = new OutMapper[BinaryType] {
+    def doMap(rs: ResultSet) = mapBinary2BinaryType(rs.getBytes(index))
+    def sample = sampleBinary
+  }
+
+  implicit def createOutMapperDateType: OutMapper[DateType] = new OutMapper[DateType] {
     def doMap(rs: ResultSet) = mapDate2DateType(rs.getDate(index))
     def sample = sampleDate
   }
 
-  protected implicit def createOutMapperTimestampType: OutMapper[TimestampType] = new OutMapper[TimestampType] {
+  implicit def createOutMapperTimestampType: OutMapper[TimestampType] = new OutMapper[TimestampType] {
     def doMap(rs: ResultSet) = mapTimestamp2TimestampType(rs.getTimestamp(index))
     def sample = sampleTimestamp
   }
-//  protected implicit def createOutMapperEnumerationValueType: OutMapper[EnumerationValueType] = new OutMapper[EnumerationValueType] {
+  implicit def createOutMapperUuidType: OutMapper[UuidType] = new OutMapper[UuidType] {
+    def doMap(rs: ResultSet) = mapObject2UuidType(rs.getObject(index))
+    def sample = sampleUuid
+  }
+//  implicit def createOutMapperEnumerationValueType: OutMapper[EnumerationValueType] = new OutMapper[EnumerationValueType] {
 //    def doMap(rs: ResultSet) = mapInt2EnumerationValueType(rs.getInt(index))
 //    def sample = sampleEnumerationValueType
 //  }
 
-  protected implicit def createOutMapperByteTypeOption: OutMapper[Option[ByteType]] = new OutMapper[Option[ByteType]] {
+  implicit def createOutMapperByteTypeOption: OutMapper[Option[ByteType]] = new OutMapper[Option[ByteType]] {
     def doMap(rs: ResultSet) = {
       val v = mapByte2ByteType(rs.getByte(index))
       if(rs.wasNull)
@@ -463,7 +533,7 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleByte)
   }
 
-  protected implicit def createOutMapperIntTypeOption: OutMapper[Option[IntType]] = new OutMapper[Option[IntType]] {
+  implicit def createOutMapperIntTypeOption: OutMapper[Option[IntType]] = new OutMapper[Option[IntType]] {
     def doMap(rs: ResultSet) = {
       val v = mapInt2IntType(rs.getInt(index))
       if(rs.wasNull)
@@ -474,7 +544,7 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleInt)
   }
 
-  protected implicit def createOutMapperDoubleTypeOption: OutMapper[Option[DoubleType]] = new OutMapper[Option[DoubleType]] {
+  implicit def createOutMapperDoubleTypeOption: OutMapper[Option[DoubleType]] = new OutMapper[Option[DoubleType]] {
     def doMap(rs: ResultSet) = {
       val v = mapDouble2DoubleType(rs.getDouble(index))
       if(rs.wasNull)
@@ -485,7 +555,7 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleDouble)
   }
 
-  protected implicit def createOutMapperBigDecimalTypeOption: OutMapper[Option[BigDecimalType]] = new OutMapper[Option[BigDecimalType]] {
+  implicit def createOutMapperBigDecimalTypeOption: OutMapper[Option[BigDecimalType]] = new OutMapper[Option[BigDecimalType]] {
     def doMap(rs: ResultSet) = {
       val v = mapBigDecimal2BigDecimalType(new BigDecimal(rs.getBigDecimal(index)))
       if(rs.wasNull)
@@ -496,7 +566,7 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleBigDecimal)
   }
 
-  protected implicit def createOutMapperFloatTypeOption: OutMapper[Option[FloatType]] = new OutMapper[Option[FloatType]] {
+  implicit def createOutMapperFloatTypeOption: OutMapper[Option[FloatType]] = new OutMapper[Option[FloatType]] {
     def doMap(rs: ResultSet) = {
       val v = mapFloat2FloatType(rs.getFloat(index))
       if(rs.wasNull)
@@ -507,7 +577,7 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleFloat)
   }
 
-  protected implicit def createOutMapperStringTypeOption: OutMapper[Option[StringType]] = new OutMapper[Option[StringType]] {
+  implicit def createOutMapperStringTypeOption: OutMapper[Option[StringType]] = new OutMapper[Option[StringType]] {
     def doMap(rs: ResultSet) = {
       val v = mapString2StringType(rs.getString(index))
       if(rs.wasNull)
@@ -518,7 +588,7 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleString)
   }
 
-  protected implicit def createOutMapperLongTypeOption: OutMapper[Option[LongType]] = new OutMapper[Option[LongType]] {
+  implicit def createOutMapperLongTypeOption: OutMapper[Option[LongType]] = new OutMapper[Option[LongType]] {
     def doMap(rs: ResultSet) = {
       val v = mapLong2LongType(rs.getLong(index))
       if(rs.wasNull)
@@ -529,7 +599,7 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleLong)
   }
 
-  protected implicit def createOutMapperBooleanTypeOption: OutMapper[Option[BooleanType]] = new OutMapper[Option[BooleanType]] {
+  implicit def createOutMapperBooleanTypeOption: OutMapper[Option[BooleanType]] = new OutMapper[Option[BooleanType]] {
     def doMap(rs: ResultSet) = {
       val v = mapBoolean2BooleanType(rs.getBoolean(index))
       if(rs.wasNull)
@@ -540,7 +610,18 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleBoolean)
   }
 
-  protected implicit def createOutMapperDateTypeOption: OutMapper[Option[DateType]] = new OutMapper[Option[DateType]] {
+  implicit def createOutMapperBinaryTypeOption: OutMapper[Option[BinaryType]] = new OutMapper[Option[BinaryType]] {
+    def doMap(rs: ResultSet) = {
+      val v = mapBinary2BinaryType(rs.getBytes(index))
+      if(rs.wasNull)
+        None
+      else
+        Some(v)
+    }
+    def sample = Some(sampleBinary)
+  }
+
+  implicit def createOutMapperDateTypeOption: OutMapper[Option[DateType]] = new OutMapper[Option[DateType]] {
     def doMap(rs: ResultSet) = {
       val v = mapDate2DateType(rs.getDate(index))
       if(rs.wasNull)
@@ -551,7 +632,7 @@ trait TypeArithmetic extends FieldTypes {
     def sample = Some(sampleDate)
   }
 
-  protected implicit def createOutMapperTimestampTypeOption: OutMapper[Option[TimestampType]] = new OutMapper[Option[TimestampType]] {
+  implicit def createOutMapperTimestampTypeOption: OutMapper[Option[TimestampType]] = new OutMapper[Option[TimestampType]] {
     def doMap(rs: ResultSet) = {
       val v = mapTimestamp2TimestampType(rs.getTimestamp(index))
       if(rs.wasNull)
@@ -560,5 +641,52 @@ trait TypeArithmetic extends FieldTypes {
         Some(v)
     }
     def sample = Some(sampleTimestamp)
-  }  
+  }
+
+  implicit def createOutMapperUuidTypeOption: OutMapper[Option[UuidType]] = new OutMapper[Option[UuidType]] {
+    def doMap(rs: ResultSet) = {
+      val v = mapObject2UuidType(rs.getObject(index))
+      if(rs.wasNull)
+        None
+      else
+        Some(v)
+    }
+    def sample = Some(sampleUuid)
+  }
+
+  protected def outMapperFromEnumValue(e: Enumeration#Value) = {
+
+    val enu = Utils.enumerationForValue(e)
+
+    new OutMapper[Enumeration#Value]() {
+
+      def doMap(rs: ResultSet) = {
+        val enumIdx = rs.getInt(this.index)
+        enu.values.find(_.id == enumIdx).get
+      }
+
+      def sample = e
+    }
+  }
+
+  /**
+   * If given None, this function will be unable to create an OutMapper, so will return None
+   */
+  protected def outMapperOptionFromOptionEnumValue(e: Option[Enumeration#Value]) =
+    if(e == None)
+      None
+    else {
+
+      val enu = Utils.enumerationForValue(e.get)
+
+      Some(new OutMapper[Option[Enumeration#Value]]() {
+
+        def doMap(rs: ResultSet) = {
+          val enumIdx = rs.getInt(this.index)
+          Some(enu.values.find(_.id == enumIdx).get)
+        }
+
+        def sample = e
+      })
+    }
 }

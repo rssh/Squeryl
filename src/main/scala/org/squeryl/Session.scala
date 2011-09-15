@@ -12,19 +12,16 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl
 
+import logging.StatisticsListener
 import org.squeryl.internals._
 import collection.mutable.ArrayBuffer
 import java.sql.{SQLException, ResultSet, Statement, Connection}
 
 
-trait Session {
-  
-  def connection: Connection
-
-  def databaseAdapter: DatabaseAdapter
+class Session(val connection: Connection, val databaseAdapter: DatabaseAdapter, val statisticsListener: Option[StatisticsListener] = None) {
 
   def bindToCurrentThread = Session.currentSession = Some(this)
 
@@ -40,6 +37,8 @@ trait Session {
 
   def log(s:String) = if(isLoggingEnabled) _logger(s)
 
+  var logUnclosedStatements = false
+
   private val _statements = new ArrayBuffer[Statement]
 
   private val _resultSets = new ArrayBuffer[ResultSet]
@@ -49,7 +48,13 @@ trait Session {
   private [squeryl] def _addResultSet(rs: ResultSet) = _resultSets.append(rs)
 
   def cleanup = {
-    _statements.foreach(s => Utils.close(s))
+    _statements.foreach(s => {
+      if (logUnclosedStatements && isLoggingEnabled && !s.isClosed) {
+        val stackTrace = Thread.currentThread.getStackTrace.map("at " + _).mkString("\n")
+        log("Statement is not closed: " + s + ": " + System.identityHashCode(s) + "\n" + stackTrace)
+      }
+      Utils.close(s)
+    })
     _statements.clear
     _resultSets.foreach(rs => Utils.close(rs))
     _resultSets.clear
@@ -84,7 +89,7 @@ object SessionFactory {
 
   def newSession: Session =
       concreteFactory.getOrElse(
-        error("org.squeryl.SessionFactory not initialized, SessionFactory.concreteFactory must be assigned a \n"+
+        org.squeryl.internals.Utils.throwError("org.squeryl.SessionFactory not initialized, SessionFactory.concreteFactory must be assigned a \n"+
               "function for creating new org.squeryl.Session, before transaction can be used.\n" +
               "Alternatively SessionFactory.externalTransactionManagementAdapter can initialized, please refer to the documentation.")
       ).apply        
@@ -92,13 +97,22 @@ object SessionFactory {
 
 object Session {
 
-  private val _currentSessionThreadLocal = new ThreadLocal[Option[Session]] {
-    override def initialValue = None
-  }
+  /**
+   * Note about ThreadLocals: all thread locals should be .removed() before the
+   * transaction ends.
+   * 
+   * Leaving a ThreadLocal inplace after the control returns to the user thread
+   * will pollute the users threads and will cause problems for e.g. Tomcat and
+   * other servlet engines.
+   */
+  private val _currentSessionThreadLocal = new ThreadLocal[Session]
   
-  def create(c: Connection, a: DatabaseAdapter) = new Session {
-    def connection = c
-    def databaseAdapter = a
+  def create(c: Connection, a: DatabaseAdapter) =
+    new Session(c,a)  
+
+  def currentSessionOption: Option[Session] = {
+    val s = _currentSessionThreadLocal.get
+    if (s == null) None else Some(s)
   }
 
   def currentSession: Session =
@@ -107,15 +121,20 @@ object Session {
       s.bindToCurrentThread
       s
     }
-    else _currentSessionThreadLocal.get.getOrElse(
-      error("no session is bound to current thread, a session must be created via Session.create \nand bound to the thread via 'work' or 'bindToCurrentThread'"))
+    else currentSessionOption.getOrElse(
+      org.squeryl.internals.Utils.throwError("no session is bound to current thread, a session must be created via Session.create \nand bound to the thread via 'work' or 'bindToCurrentThread'"))
 
   def hasCurrentSession =
-    _currentSessionThreadLocal.get != None
+    currentSessionOption != None
 
   def cleanupResources =
-    if(_currentSessionThreadLocal != None)
-      _currentSessionThreadLocal.get.get.cleanup
+    currentSessionOption foreach (_.cleanup)
 
-  private def currentSession_=(s: Option[Session]) = _currentSessionThreadLocal.set(s)
+  private def currentSession_=(s: Option[Session]) = 
+    if (s == None) {
+      _currentSessionThreadLocal.remove()        
+    } else {
+      _currentSessionThreadLocal.set(s.get)
+    }
+  
 }

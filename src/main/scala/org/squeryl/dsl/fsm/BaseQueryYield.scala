@@ -12,23 +12,23 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl.fsm
 
 import org.squeryl.dsl.ast._
 import org.squeryl.dsl._
-import org.squeryl.dsl.boilerplate.{STuple1, STuple3, STuple6, OrderBySignatures}
+import org.squeryl.dsl.boilerplate._
 import org.squeryl.internals.{FieldReferenceLinker, ResultSetMapper, ColumnToTupleMapper, OutMapper}
 import java.sql.ResultSet
 
 
 class BaseQueryYield[G]
-  (val queryElementzz: QueryElements, val selectClosure: ()=>G)
+  (val queryElementzz: QueryElements[_], val selectClosure: ()=>G)
   extends SelectState[G]
     with OrderBySignatures[G]
     with QueryYield[G] {
 
-  protected def _createColumnToTupleMapper(origin: QueryableExpressionNode, agregateArgs: List[TypedExpressionNode[_]], offsetInResultSet:Int, isForGroup:Boolean) = {
+  protected def _createColumnToTupleMapper(origin: QueryExpressionNode[_], agregateArgs: List[TypedExpressionNode[_]], offsetInResultSet:Int, isForGroup:Boolean) = {
 
     var i = -1;
     val nodes = agregateArgs.map(e => { i += 1; new TupleSelectElement(origin, e, i, isForGroup)})
@@ -52,7 +52,9 @@ class BaseQueryYield[G]
     (m, nodes)
   }
 
-  protected var _havingClause: Option[()=>TypedExpressionNode[LogicalBoolean]] = None
+  protected var _havingClause: Option[()=>LogicalBoolean] = None
+
+  def unevaluatedHavingClause = _havingClause
 
   //TODO: an array is probably more efficient, even if less 'lazy' :
   protected var _orderByExpressions: () => List[()=>ExpressionNode] = null
@@ -83,10 +85,19 @@ class BaseQueryYield[G]
   def invokeYieldForAst(q: QueryExpressionNode[_], rsm: ResultSetMapper) =
     FieldReferenceLinker.determineColumnsUtilizedInYeldInvocation(
       q, rsm, ()=>invokeYield(rsm, null).asInstanceOf[AnyRef])
+
+
+  protected def _sTuple1ToValue[B](b: B) =
+    b match {
+        case t:STuple1[_] =>
+          if(t.productArity == 1)
+            t._1.asInstanceOf[B]
+          else b
+      }
 }
 
 class GroupQueryYield[K] (
-   _qe: QueryElements,
+   _qe: QueryElements[_],
    val groupByClauseClosure: ()=>List[TypedExpressionNode[_]]
   )
   extends BaseQueryYield[Group[K]](_qe, null)
@@ -105,17 +116,23 @@ class GroupQueryYield[K] (
   override def queryElements =
     (whereClause, havingClause, groupByClause, orderByClause)
 
+  class SampleGroup[K](k:K)
+    extends Group(k) {
+
+    override def key = _sTuple1ToValue(k)
+  }
+
   override def invokeYieldForAst(q: QueryExpressionNode[_], rsm: ResultSetMapper) = {
     val offset = 1
     val (m, nodes) = _createColumnToTupleMapper(q, groupByClauseClosure(), offset, true)
     rsm.groupKeysMapper = Some(m)
-    val st = new STuple6(nodes, m.outMappers).asInstanceOf[K]
-    (nodes, new Group(st))
+    val st = SampleTuple.create(nodes, m.outMappers).asInstanceOf[K]
+    (nodes, new SampleGroup(st))
   }
 }
 
 class MeasuresQueryYield[M](
-   _qe: QueryElements,
+   _qe: QueryElements[_],
    _computeByClauseClosure: ()=>List[TypedExpressionNode[_]]
   )
   extends BaseQueryYield[Measures[M]](_qe, null)
@@ -129,18 +146,26 @@ class MeasuresQueryYield[M](
   override def queryElements =
     (whereClause, havingClause, groupByClause, orderByClause)
 
+
+  class SampleMeasures[M](m:M)
+    extends Measures(m) {
+
+    override def measures = _sTuple1ToValue(m)
+  }
+
   override def invokeYieldForAst(q: QueryExpressionNode[_], rsm: ResultSetMapper) = {
     val offset = 1
     val (m, nodes) = _createColumnToTupleMapper(q, _computeByClauseClosure(), offset, false)
     rsm.groupMeasuresMapper = Some(m)
-    val st = new STuple6(nodes, m.outMappers).asInstanceOf[M]
-    (nodes, new Measures(st))
+    val st = SampleTuple.create(nodes, m.outMappers).asInstanceOf[M]
+    (nodes, new SampleMeasures(st))
   }
 }
 
 class GroupWithMeasuresQueryYield[K,M] (
-  _qe: QueryElements,
+  _qe: QueryElements[_],
   _groupByClauseClosure: ()=>List[TypedExpressionNode[_]],
+  _having: Option[()=>LogicalBoolean],
   _computeClauseClosure: ()=>List[TypedExpressionNode[_]]
 )
 extends BaseQueryYield[GroupWithMeasures[K,M]](_qe, null)
@@ -152,22 +177,16 @@ extends BaseQueryYield[GroupWithMeasures[K,M]](_qe, null)
   class SampleGroupWithMeasures[K, M](k:K, m:M)
     extends GroupWithMeasures(k,m) {
 
-    override def key =
-      k match {
-        case t:STuple1[_] =>
-          if(t.productArity == 1)
-            t._1.asInstanceOf[K]
-          else k
-      }
+    override def key = _sTuple1ToValue(k)
 
-    override def measures =
-      m match {
-        case t:STuple1[_] =>
-          if(t.productArity == 1)
-            t._1.asInstanceOf[M]
-          else m
-      }
+    override def measures = _sTuple1ToValue(m)
   }
+
+  override def havingClause =
+    if(_having != None)
+      _having.map(c=>c())
+    else
+      super.havingClause
 
    override def queryElements =
     (whereClause, havingClause, _groupByClauseClosure().map(e => e), orderByClause)
@@ -185,8 +204,8 @@ extends BaseQueryYield[GroupWithMeasures[K,M]](_qe, null)
     rsm.groupKeysMapper = Some(km)
     rsm.groupMeasuresMapper = Some(mm)
 
-    val stK = new STuple3(knodes, km.outMappers).asInstanceOf[K]
-    val stM = new STuple3(mnodes, mm.outMappers).asInstanceOf[M]
+    val stK = SampleTuple.create(knodes, km.outMappers).asInstanceOf[K]
+    val stM = SampleTuple.create(mnodes, mm.outMappers).asInstanceOf[M]
 
     (List(knodes,mnodes).flatten,  new SampleGroupWithMeasures(stK, stM))
   }

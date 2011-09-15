@@ -12,18 +12,16 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl
-
 
 import dsl._
 import ast._
 import internals._
 import reflect.{Manifest}
 import java.sql.SQLException
-import collection.mutable.{HashSet, ArrayBuffer}
 import java.io.PrintWriter
-
+import collection.mutable.{HashMap, HashSet, ArrayBuffer}
 
 trait Schema {
 
@@ -33,6 +31,8 @@ trait Schema {
    * Contains all Table[_]s in this shema, and also all ManyToManyRelation[_,_,_]s (since they are also Table[_]s
    */
   private val _tables = new ArrayBuffer[Table[_]] 
+  
+  private val _tableTypes = new HashMap[Class[_], Table[_]]
 
   private val _oneToManyRelations = new ArrayBuffer[OneToManyRelation[_,_]]
 
@@ -72,13 +72,13 @@ trait Schema {
     res
   }
 
-  @deprecated("will be removed in a future version")
-  def findTableFor[A](a: A): Option[Table[A]] = {
+
+  def findTablesFor[A](a: A): Iterable[Table[A]] = {
     val c = a.asInstanceOf[AnyRef].getClass
-    _tables.find(_.posoMetaData.clasz == c).asInstanceOf[Option[Table[A]]]
+    _tables.filter(_.posoMetaData.clasz == c).asInstanceOf[Iterable[Table[A]]]
   }
 
-  private def findAllTablesFor[A](c: Class[A]) =
+  private [squeryl] def findAllTablesFor[A](c: Class[A]) =
     _tables.filter(t => c.isAssignableFrom(t.posoMetaData.clasz)).asInstanceOf[Traversable[Table[_]]]
 
 
@@ -156,7 +156,7 @@ trait Schema {
    * database instances, the method is protected in order to make it a little
    * less 'accessible'
    */
-  protected def drop: Unit = {
+  def drop: Unit = {
 
     if(_dbAdapter.supportsForeignKeyConstraints)
       _dropForeignKeyConstraints
@@ -192,7 +192,7 @@ trait Schema {
   private def _writeColumnGroupAttributeAssignments: Seq[String] =
     for(cgaa <- _columnGroupAttributeAssignments)
       yield _writeIndexDeclarationIfApplicable(cgaa.columnAttributes, cgaa.columns, cgaa.name).
-        getOrElse(error("emtpy attribute list should not be possible to create with DSL (Squeryl bug)."))
+        getOrElse(org.squeryl.internals.Utils.throwError("emtpy attribute list should not be possible to create with DSL (Squeryl bug)."))
 
   private def _writeIndexDeclarationIfApplicable(columnAttributes: Seq[ColumnAttribute], cols: Seq[FieldMetaData], name: Option[String]): Option[String] = {
 
@@ -330,19 +330,26 @@ trait Schema {
     table(tableNameFromClass(manifestT.erasure))(manifestT)
   
   protected def table[T](name: String)(implicit manifestT: Manifest[T]): Table[T] = {
-    val t = new Table[T](name, manifestT.erasure.asInstanceOf[Class[T]], this, None)
+    val typeT = manifestT.erasure.asInstanceOf[Class[T]]
+    val t = new Table[T](name, typeT, this, None)
     _addTable(t)
+    _addTableType(typeT, t)
     t
   }
 
   protected def table[T](name: String, prefix: String)(implicit manifestT: Manifest[T]): Table[T] = {
-    val t = new Table[T](name, manifestT.erasure.asInstanceOf[Class[T]], this, Some(prefix))
+    val typeT = manifestT.erasure.asInstanceOf[Class[T]]
+    val t = new Table[T](name, typeT, this, Some(prefix))
     _addTable(t)
+    _addTableType(typeT, t)
     t
   }
 
   private [squeryl] def _addTable(t:Table[_]) =
     _tables.append(t)
+    
+  private [squeryl] def _addTableType(typeT: Class[_], t: Table[_]) =
+    _tableTypes += ((typeT, t))
   
   protected def view[T]()(implicit manifestT: Manifest[T]): View[T] =
     view(tableNameFromClass(manifestT.erasure))(manifestT)
@@ -355,6 +362,7 @@ trait Schema {
     def restrict = new ReferentialActionImpl("restrict", this)
     def cascade = new ReferentialActionImpl("cascade", this)
     def noAction = new ReferentialActionImpl("no action", this)
+    def setNull = new ReferentialActionImpl("set null", this)
   }
 
   class ReferentialActionImpl(token: String, ev: ReferentialEvent) extends ReferentialAction {
@@ -378,10 +386,6 @@ trait Schema {
   def applyDefaultForeignKeyPolicy(foreignKeyDeclaration: ForeignKeyDeclaration) =
     foreignKeyDeclaration.constrainReference
 
-  @deprecated("Use applyDefaultForeignKeyPolicy instead")
-  final def applyDefaultForeingKeyPolicy(foreingKeyDeclaration: ForeignKeyDeclaration) =
-    applyDefaultForeignKeyPolicy(foreingKeyDeclaration)
-
   /**
    * @return a Tuple2 with (LengthOfDecimal, Scale) that will determine the storage
    * length of the database type that map fields of type java.lang.BigDecimal
@@ -396,18 +400,21 @@ trait Schema {
    * Can be overridden by the Column Annotation ex.: Column(length=256)
    * default is 128 
    */
-  def defaultLengthOfString = 123
+  def defaultLengthOfString = 128
 
   /**
    * protected since table declarations must only be done inside a Schema
    */
-
   protected def declare[B](a: BaseColumnAttributeAssignment*) = a
 
   /**
    * protected since table declarations must only be done inside a Schema
    */  
   protected def on[A](table: Table[A]) (declarations: A=>Seq[BaseColumnAttributeAssignment]) = {
+
+    if(table == null)
+      org.squeryl.internals.Utils.throwError("on function called with null argument in " + this.getClass.getName +
+            " tables must be initialized before declarations.")
 
     val colAss: Seq[BaseColumnAttributeAssignment] =
       Utils.mapSampleObject(table, declarations)
@@ -420,7 +427,7 @@ trait Schema {
       case dva:DefaultValueAssignment    => {
 
         if(! dva.value.isInstanceOf[ConstantExpressionNode[_]])
-          error("error in declaration of column "+ table.prefixedName + "." + dva.left.nameOfProperty + ", " + 
+          org.squeryl.internals.Utils.throwError("error in declaration of column "+ table.prefixedName + "." + dva.left.nameOfProperty + ", " +
                 "only constant expressions are supported in 'defaultsTo' declaration")
 
         dva.left._defaultValue = Some(dva.value.asInstanceOf[ConstantExpressionNode[_]])
@@ -443,7 +450,7 @@ trait Schema {
         _addColumnGroupAttributeAssignment(ctaa)
       }
       
-      case a:Any => error("did not match on " + a.getClass.getName)
+      case a:Any => org.squeryl.internals.Utils.throwError("did not match on " + a.getClass.getName)
     }
 
 //    for(ca <- colAss.find(_.isIdFieldOfKeyedEntity))
@@ -461,8 +468,8 @@ trait Schema {
       case cga:CompositeKeyAttributeAssignment => {}
       case caa:ColumnAttributeAssignment => {
         for(ca <- caa.columnAttributes if ca.isInstanceOf[AutoIncremented] && !(caa.left.isIdFieldOfKeyedEntity))
-          error("Field " + caa.left.nameOfProperty + " of table " + table.name +
-                " is declared as autoIncrementeded, auto increment is currently only supported on KeyedEntity[A].id")
+          org.squeryl.internals.Utils.throwError("Field " + caa.left.nameOfProperty + " of table " + table.name +
+                " is declared as autoIncremented, auto increment is currently only supported on KeyedEntity[A].id")
       }
       case dva:Any => {}
     }
@@ -471,7 +478,11 @@ trait Schema {
   private def _addColumnGroupAttributeAssignment(cga: ColumnGroupAttributeAssignment) =
     _columnGroupAttributeAssignments.append(cga);
   
-  def defaultColumnAttributesForKeyedEntityId = Set(new PrimaryKey, new AutoIncremented(None))
+  def defaultColumnAttributesForKeyedEntityId(typeOfIdField: Class[_]) =
+    if(typeOfIdField.isAssignableFrom(classOf[java.lang.Long]) || typeOfIdField.isAssignableFrom(classOf[java.lang.Integer]))
+      Set(new PrimaryKey, new AutoIncremented(None))
+    else
+      Set(new PrimaryKey)
   
   protected def unique = Unique()
 
@@ -487,6 +498,10 @@ trait Schema {
 
   protected def dbType(declaration: String) = DBType(declaration)
 
+  protected def uninsertable = Uninsertable()
+
+  protected def unupdatable = Unupdatable()
+
   class ColGroupDeclaration(cols: Seq[FieldMetaData]) {
 
     def are(columnAttributes: AttributeValidOnMultipleColumn*) =
@@ -494,4 +509,113 @@ trait Schema {
   }
 
   def columns(fieldList: TypedExpressionNode[_]*) = new ColGroupDeclaration(fieldList.map(_._fieldMetaData))
+
+  // POSO Life Cycle Callbacks :
+
+  def callbacks: Seq[LifecycleEvent] = Nil
+
+////2.9.x approach for LyfeCycle events :
+//  def delayedInit(body: => Unit) = {
+//
+//    body
+//
+//    (for(cb <- callbacks; t <- cb.target) yield (t, cb))
+//    .groupBy(_._1)
+//    .mapValues(_.map(_._2))
+//    .foreach(
+//     (t:Tuple2[View[_],Seq[LifecycleEvent]]) => {
+//       t._1._callbacks = new LifecycleEventInvoker(t._2, t._1)
+//     }
+//    )
+//  }
+
+////2.8.x approach for LyfeCycle events :
+  private [squeryl] lazy val _callbacks: Map[View[_],LifecycleEventInvoker] = {
+    val m =
+      (for(cb <- callbacks; t <- cb.target) yield (t, cb))
+      .groupBy(_._1)
+      .mapValues(_.map(_._2))
+      .map(
+       (t:Tuple2[View[_],Seq[LifecycleEvent]]) => {
+         (t._1, new LifecycleEventInvoker(t._2, t._1)): (View[_],LifecycleEventInvoker)
+       })
+      .toMap
+    m
+  }
+
+  import internals.PosoLifecycleEvent._
+
+  protected def beforeInsert[A](t: Table[A]) =
+    new LifecycleEventPercursorTable[A](t, BeforeInsert)
+
+  protected def beforeInsert[A]()(implicit m: Manifest[A]) =
+    new LifecycleEventPercursorClass[A](m.erasure, this, BeforeInsert)
+
+  protected def beforeUpdate[A](t: Table[A]) =
+    new LifecycleEventPercursorTable[A](t, BeforeInsert)
+
+  protected def beforeUpdate[A]()(implicit m: Manifest[A]) =
+    new LifecycleEventPercursorClass[A](m.erasure, this, BeforeUpdate)
+
+  protected def beforeDelete[A](t: Table[A])(implicit ev : A <:< KeyedEntity[_]) =
+    new LifecycleEventPercursorTable[A](t, BeforeDelete)
+
+  protected def beforeDelete[K, A <: KeyedEntity[K]]()(implicit m: Manifest[A]) =
+    new LifecycleEventPercursorClass[A](m.erasure, this, BeforeDelete)
+
+  protected def afterInsert[A](t: Table[A]) =
+    new LifecycleEventPercursorTable[A](t, AfterInsert)
+
+  protected def afterInsert[A]()(implicit m: Manifest[A]) =
+    new LifecycleEventPercursorClass[A](m.erasure, this, AfterInsert)
+
+  protected def afterUpdate[A](t: Table[A]) =
+    new LifecycleEventPercursorTable[A](t, AfterUpdate)
+
+  protected def afterUpdate[A]()(implicit m: Manifest[A]) =
+    new LifecycleEventPercursorClass[A](m.erasure, this, AfterUpdate)
+
+  protected def afterDelete[A](t: Table[A]) =
+    new LifecycleEventPercursorTable[A](t, AfterDelete)
+
+  protected def afterDelete[A]()(implicit m: Manifest[A]) =
+    new LifecycleEventPercursorClass[A](m.erasure, this, AfterDelete)
+
+  protected def factoryFor[A](table: Table[A]) =
+    new PosoFactoryPercursorTable[A](table)
+
+  /**
+   * Creates a ActiveRecord instance for the given the object. That allows the user
+   * to save the given object using the Active Record pattern.
+   *
+   * @return a instance of ActiveRecord associated to the given object.
+   */
+  implicit def anyRef2ActiveTransaction[A](a: A)(implicit queryDsl: QueryDsl, m: Manifest[A]) =
+    new ActiveRecord(a, queryDsl, m)
+
+  /**
+   * Active Record pattern implementation. Enables the user to insert an object in its
+   * existent table with a convenient {{{save}}} method.
+   */
+  class ActiveRecord[A](a: A, queryDsl: QueryDsl, m: Manifest[A]) {
+    
+    private def _performAction(action: (Table[A]) => Unit) =
+      _tableTypes get (m.erasure) map { table: Table[_] =>
+        queryDsl inTransaction (action(table.asInstanceOf[Table[A]]))
+      }
+    
+    /**
+     * Same as {{{table.insert(a)}}}
+     */
+    def save =
+      _performAction(_.insert(a))
+
+    /**
+     * Same as {{{table.update(a)}}}
+     */  
+    def update(implicit ev: A <:< KeyedEntity[_]) =
+      _performAction(_.update(a))
+      
+  }
+
 }

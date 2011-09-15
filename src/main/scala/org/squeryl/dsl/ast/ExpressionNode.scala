@@ -12,14 +12,16 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl.ast
 
 
 import collection.mutable.ArrayBuffer
 import org.squeryl.internals._
 import org.squeryl.dsl._
-import org.squeryl.{KeyedEntity, Schema, Session}
+import org.squeryl.{Query, KeyedEntity, Schema, Session}
+import javax.management.RuntimeErrorException
+import java.sql.ResultSet
 
 trait ExpressionNode {
 
@@ -27,7 +29,7 @@ trait ExpressionNode {
 
   def id = Integer.toHexString(System.identityHashCode(this))
 
-  def inhibited = false
+  def inhibited = _inhibitedByWhen
   
   def inhibitedFlagForAstDump =
     if(inhibited) "!" else ""
@@ -82,6 +84,22 @@ trait ExpressionNode {
    */
   def visitDescendants(visitor: (ExpressionNode,Option[ExpressionNode],Int) => Unit) =
     _visitDescendants(this, None, 0, visitor)
+
+  protected var _inhibitedByWhen = false
+
+  def inhibitWhen(inhibited: Boolean): this.type = {
+    _inhibitedByWhen = inhibited
+    this
+  }
+
+  def ? : this.type = {
+    if(! this.isInstanceOf[ConstantExpressionNode[_]])
+      org.squeryl.internals.Utils.throwError("the '?' operator (shorthand for 'p.inhibitWhen(p == None))' can only be used on a constant query argument")
+
+    val c = this.asInstanceOf[ConstantExpressionNode[_]]
+
+    inhibitWhen(c.value == None)
+  }
 }
 
 
@@ -92,39 +110,20 @@ trait ListExpressionNode extends ExpressionNode {
   def isEmpty: Boolean
 }
 
-trait ListNumerical extends ListExpressionNode
-
-
-trait ListDouble extends ListNumerical
-trait ListBigDecimal extends ListNumerical
-trait ListFloat  extends ListNumerical
-trait ListInt extends ListNumerical
-trait ListLong extends ListNumerical
-trait ListDate extends ListExpressionNode
-
-trait ListString extends ListExpressionNode {
-  override def quotesElement = true
-}
-
 class EqualityExpression(override val left: TypedExpressionNode[_], override val right: TypedExpressionNode[_]) extends BinaryOperatorNodeLogicalBoolean(left, right, "=")
 
-class InListExpression(left: ExpressionNode, right: ListExpressionNode, inclusion: Boolean) extends BinaryOperatorNodeLogicalBoolean(left, right, if(inclusion) "in" else "not in") {
-
-  override def inhibited =
-    if(right.isEmpty)
-      (! inclusion)
-    else
-      super.inhibited
+class InclusionOperator(left: ExpressionNode, right: RightHandSideOfIn[_]) extends BinaryOperatorNodeLogicalBoolean(left, right, "in", true) {
 
   override def doWrite(sw: StatementWriter) =
-    if(inclusion  && right.isEmpty)
+    if(right.isConstantEmptyList)
       sw.write("(1 = 0)")
     else
       super.doWrite(sw)
 }
 
+class ExclusionOperator(left: ExpressionNode, right: RightHandSideOfIn[_]) extends BinaryOperatorNodeLogicalBoolean(left, right, "not in", true)
 
-class BinaryOperatorNodeLogicalBoolean(left: ExpressionNode, right: ExpressionNode, op: String)
+class BinaryOperatorNodeLogicalBoolean(left: ExpressionNode, right: ExpressionNode, op: String, rightArgInParent: Boolean = false)
   extends BinaryOperatorNode(left,right, op) with LogicalBoolean {
 
   override def inhibited =
@@ -145,11 +144,21 @@ class BinaryOperatorNodeLogicalBoolean(left: ExpressionNode, right: ExpressionNo
       if(newLineAfterOperator)
         sw.nextLine
       sw.write(" ")
+
+      if(rightArgInParent)
+        sw.write("(")
+
       nonInh.next.write(sw)
+      
+      if(rightArgInParent)
+        sw.write(")")      
     }
     sw.write(")")
   }
 }
+
+class ExistsExpression(val ast: ExpressionNode, val opType: String)
+  extends PrefixOperatorNode(ast, opType, false) with LogicalBoolean with NestedExpression
 
 class BetweenExpression(first: ExpressionNode, second: ExpressionNode, third: ExpressionNode)
   extends TernaryOperatorNode(first, second, third, "between") with LogicalBoolean {
@@ -260,6 +269,9 @@ trait TypedExpressionNode[T] extends ExpressionNode {
   def :=[B <% TypedExpressionNode[T]] (b: B) =
     new UpdateAssignment(_fieldMetaData, b : TypedExpressionNode[T])
 
+  def :=(q: Query[Measures[T]]) =
+    new UpdateAssignment(_fieldMetaData, q.ast)
+
   def defaultsTo[B <% TypedExpressionNode[T]](value: B) /*(implicit restrictUsageWithinSchema: Schema) */ =
     new DefaultValueAssignment(_fieldMetaData, value : TypedExpressionNode[T])
 
@@ -280,7 +292,7 @@ trait TypedExpressionNode[T] extends ExpressionNode {
 
     val fmd =
       try {
-        ser.selectElement.asInstanceOf[FieldSelectElement].fieldMataData
+        ser.selectElement.asInstanceOf[FieldSelectElement].fieldMetaData
       }
       catch { // TODO: validate this at compile time with a scalac plugin
         case e:ClassCastException => {
@@ -289,38 +301,22 @@ trait TypedExpressionNode[T] extends ExpressionNode {
       }
     fmd
   }
-
-  private var _inhibitedByWhen = false
-
-  override def inhibited =
-    super.inhibited || _inhibitedByWhen
-
-  def inhibitWhen(inhibited: Boolean): this.type = {
-    _inhibitedByWhen = inhibited
-    this
-  }
-
-  def ? : this.type = {
-    if(! this.isInstanceOf[ConstantExpressionNode[_]])
-      error("the '?' operator (shorthand for 'p.inhibitWhen(p == None))' can only be used on a constant query argument")
-
-    val c = this.asInstanceOf[ConstantExpressionNode[_]]
-
-    inhibitWhen(c.value == None)
-  }  
 }
 
 class TokenExpressionNode(val token: String) extends ExpressionNode {
   def doWrite(sw: StatementWriter) = sw.write(token)
 }
 
-class ConstantExpressionNode[T](val value: T) extends ExpressionNode {
 
-  //def this(v:T) = this(v, false)
+class UntypedConstantExpressionNode[T](v: T) extends ConstantExpressionNode[T](v, None : Option[OutMapper[T]])
+
+class ConstantExpressionNode[T] protected (val value: T, _mapper: Option[OutMapper[T]]) extends ExpressionNode {
+
+  def this(v: T)(implicit m: OutMapper[T]) = this(v,Some(m))
 
   private def needsQuote = value.isInstanceOf[String]
 
-  def mapper: OutMapper[T] = error("outMapper should not be used on " + 'ConstantExpressionNode)
+  def mapper = _mapper.getOrElse(Utils.throwError("No OutMapper !"))
 
   def doWrite(sw: StatementWriter) = {
     if(sw.isForDisplay) {
@@ -342,23 +338,25 @@ class ConstantExpressionNode[T](val value: T) extends ExpressionNode {
   override def toString = 'ConstantExpressionNode + ":" + value
 }
 
-class ConstantExpressionNodeList[T](val value: Traversable[T]) extends ExpressionNode with ListExpressionNode {
+class ConstantExpressionNodeList[T](val value: Traversable[T]) extends ExpressionNode {
 
   def isEmpty =
     value == Nil
 
   def doWrite(sw: StatementWriter) =
-    if(quotesElement)
-      sw.write(this.value.map(e=>"'" +e+"'").mkString("(",",",")"))
-    else
-      sw.write(this.value.mkString("(",",",")"))
+    if(sw.isForDisplay)
+      sw.write(this.value.map(e=>"'" +e+"'").mkString(","))
+    else {
+      sw.write(this.value.toSeq.map(z => "?").mkString(","))
+      this.value.foreach(z => sw.addParam(z.asInstanceOf[AnyRef]))
+    }
 }
 
 class FunctionNode[A](val name: String, _mapper : Option[OutMapper[A]], val args: Iterable[ExpressionNode]) extends ExpressionNode {
 
   def this(name: String, args: ExpressionNode*) = this(name, None, args)
 
-  def mapper: OutMapper[A] = _mapper.getOrElse(error("no mapper available"))
+  def mapper: OutMapper[A] = _mapper.getOrElse(org.squeryl.internals.Utils.throwError("no mapper available"))
 
   def doWrite(sw: StatementWriter) = {
 
@@ -416,6 +414,26 @@ class BinaryOperatorNode
   }
 }
 
+class PrefixOperatorNode
+ (val child: ExpressionNode, val operatorToken: String, val newLineAfterOperator: Boolean = false)
+  extends ExpressionNode {
+
+  override def children = List(child)
+
+  override def inhibited = child.inhibited
+
+  override def toString = 'PrefixOperatorNode + ":" + operatorToken + inhibitedFlagForAstDump
+
+  override def doWrite(sw: StatementWriter) = {
+    sw.write("(")
+    sw.write(operatorToken)
+    if(newLineAfterOperator)
+      sw.nextLine
+    child.write(sw)
+    sw.write(")")
+  }
+}
+
 class LeftOuterJoinNode
  (left: ExpressionNode, right: ExpressionNode)
   extends BinaryOperatorNode(left,right, "left", false) {
@@ -441,6 +459,12 @@ trait QueryableExpressionNode extends ExpressionNode with UniqueIdInAliaseRequir
 
   def inhibited_=(b: Boolean) = _inhibited = b
 
+  /**
+   * When the join syntax is used, isMemberOfJoinList is true if this instance is not in the from clause
+   * but a 'join element'. 
+   */
+  def isMemberOfJoinList = joinKind != None
+
   // new join syntax
   var joinKind: Option[(String,String)] = None
 
@@ -452,19 +476,8 @@ trait QueryableExpressionNode extends ExpressionNode with UniqueIdInAliaseRequir
   // this 'old' join syntax will become deprecated : 
   var outerJoinExpression: Option[OuterJoinExpression] = None
 
-  def isOuterJoinedDEPRECATED = outerJoinExpression != None
-
   var isRightJoined = false
-  
-  def dumpOuterJoinInfoForAst(sb: StringBuffer) =
-    if(isOuterJoinedDEPRECATED) {
-      val oje = outerJoinExpression.get
-      sb.append(oje.leftRightOrFull)
-      sb.append("OuterJoin(")
-      sb.append(oje.matchExpression.writeToString)
-      sb.append(")")
-    }
-  
+
   def isChild(q: QueryableExpressionNode): Boolean  
 
   def owns(aSample: AnyRef): Boolean
@@ -504,7 +517,7 @@ class OrderByArg(val e: ExpressionNode) {
   }  
 }
 
-class OrderByExpression(a: OrderByArg) extends ExpressionNode { //with TypedExpressionNode[_] {
+class OrderByExpression(a: OrderByArg) extends ExpressionNode {
 
   private def e = a.e
   
@@ -519,5 +532,76 @@ class OrderByExpression(a: OrderByArg) extends ExpressionNode { //with TypedExpr
   }
 
   override def children = List(e)
-  
+
+  def inverse = {
+
+    val aCopy = new OrderByArg(a.e)
+
+    if(aCopy.isAscending)
+      aCopy.desc
+    else
+      aCopy.asc
+
+    new OrderByExpression(aCopy)
+  }  
+}
+
+/**
+ * Update, delete and insert statement are not built with AST nodes,
+ * (for example Table[].update), although some portions of these statements
+ * (where clauses are sometimes built with it.
+ * The StatisticsListener needs to view every expression call as an AST,
+ * which is the reason for this class.
+ * AST are meant to be "non rendered", i.e. agnostic to specific DatabaseAdapter,
+ * this DummyExpressionHolder is an exception.  
+ * TODO: unify expression building to be completely AST based.
+ */
+class DummyExpressionHolder(val renderedExpression: String) extends ExpressionNode {
+
+  def doWrite(sw: StatementWriter) =
+    sw.write(renderedExpression)
+}
+
+class RightHandSideOfIn[A](val ast: ExpressionNode, val isIn: Option[Boolean] = None)
+    extends ExpressionNode with NestedExpression {
+  def toIn = new RightHandSideOfIn[A](ast, Some(true))
+  def toNotIn = new RightHandSideOfIn[A](ast, Some(false))
+
+  override def children = List(ast)
+
+  override def inhibited =
+    if(isConstantEmptyList) // not in Empty is always true, so we remove the condition
+      (! isIn.get)
+    else
+      super.inhibited
+
+  def isConstantEmptyList =
+    if(ast.isInstanceOf[ConstantExpressionNodeList[Any]]) {
+      ast.asInstanceOf[ConstantExpressionNodeList[Any]].isEmpty
+    }
+    else false
+
+  override def doWrite(sw: StatementWriter) =
+    if(isConstantEmptyList && isIn.get)
+      sw.write("1 = 0") // in Empty is always false
+    else {
+      ast.doWrite(sw)
+    }
+}
+
+trait NestedExpression {
+  self: ExpressionNode =>
+
+  private [squeryl] def propagateOuterScope(query:QueryExpressionNode[_]) {
+    visitDescendants( (node, parent, depth) =>
+      node match {
+        case e:ExportedSelectElement if e.needsOuterScope => e.outerScopes = query :: e.outerScopes
+        case s:SelectElementReference[_] => s.delegateAtUseSite match {
+          case e:ExportedSelectElement if e.needsOuterScope => e.outerScopes = query :: e.outerScopes
+          case _ =>
+        }
+        case _ =>
+      }
+    )
+  }
 }

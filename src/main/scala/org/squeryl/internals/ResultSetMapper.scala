@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.internals
 
 import java.sql.ResultSet
@@ -52,13 +52,19 @@ trait OutMapper[T] extends ResultSetUtils {
 
   override def toString =
     "$OM(" + index + "," +
-    sample.asInstanceOf[AnyRef].getClass.getSimpleName + ")" +
+    jdbcClass.getSimpleName + ")" +
     (if(isActive) "*" else "")
 
   var index: Int = -1
 
   var isActive = false
-  
+
+  def jdbcClass =
+    sample match {
+      case Some(x:AnyRef) => x.getClass
+      case x:AnyRef  => x.getClass
+    }
+
   def map(rs: ResultSet): T =
     if(isActive)
       try {
@@ -86,7 +92,7 @@ object NoOpOutMapper extends OutMapper[Any] {
 
   def doMap(rs: ResultSet) = sample
 
-  def sample = error(" cannot use NoOpOutMapper")
+  def sample = org.squeryl.internals.Utils.throwError(" cannot use NoOpOutMapper")
 
   override def typeOfExpressionToString = "NoOpOutMapper"  
 }
@@ -94,7 +100,7 @@ object NoOpOutMapper extends OutMapper[Any] {
 class ColumnToFieldMapper(val index: Int, val fieldMetaData: FieldMetaData, selectElement: SelectElement)  {
 
   if(index <= 0)
-    error("invalid Jdbc index " + index)
+    org.squeryl.internals.Utils.throwError("invalid Jdbc index " + index)
 
   def map(obj: AnyRef, rs: ResultSet): Unit = {
 
@@ -135,7 +141,7 @@ class ColumnToTupleMapper(val outMappers: Array[OutMapper[_]]) {
       case 6 => (m(0).map(rs), m(1).map(rs), m(2).map(rs), m(3).map(rs), m(4).map(rs), m(5).map(rs))
       case 7 => (m(0).map(rs), m(1).map(rs), m(2).map(rs), m(3).map(rs), m(4).map(rs), m(5).map(rs), m(6).map(rs))
       //TODO: implement tuples results of size up to 22
-      case z:Any => error("tuples of size "+size+" and greater are not supported")
+      case z:Any => org.squeryl.internals.Utils.throwError("tuples of size "+size+" and greater are not supported")
     }
     
     res.asInstanceOf[T]
@@ -198,6 +204,15 @@ class ResultSetMapper extends ResultSetUtils {
       if(rs.getObject(c2fm.index) != null)
         return false
     }
+
+    //outMappers
+    for(col2TupleMapper <- List(groupKeysMapper, groupMeasuresMapper).filter(_ != None).map(_.get);
+        outMapper <- col2TupleMapper.outMappers) {
+
+      if(outMapper.isActive && rs.getObject(outMapper.index) != null)
+        return false
+    }
+
     // if we get here we have matched on a row wit all nulls OR we haven't matched,
     // this is an extreme corner case, we will return None, in reality we should
     // sometimes return a Some with all fields None

@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl
 
 import dsl.QueryDsl
@@ -27,6 +27,14 @@ class View[T] private [squeryl](_name: String, private[squeryl] val classOfT: Cl
 
   def this(n:String)(implicit manifestT: Manifest[T]) =
     this(n, manifestT.erasure.asInstanceOf[Class[T]], DummySchema, None)
+
+//2.9.x approach for LyfeCycle events :
+//  private [squeryl] var _callbacks: PosoLifecycleEventListener = NoOpPosoLifecycleEventListener
+
+////2.8.x approach for LyfeCycle events :
+  private [squeryl] lazy val _callbacks =
+    schema._callbacks.get(this).getOrElse(NoOpPosoLifecycleEventListener)
+
 
   def name = schema.tableNameFromClassName(_name)
 
@@ -66,15 +74,19 @@ class View[T] private [squeryl](_name: String, private[squeryl] val classOfT: Cl
       (t:T) => t.asInstanceOf[PersistenceStatus]._isPersisted = true
     else
       (t:T) => {}
+
+  private val _posoFactory =
+    FieldMetaData.factory.createPosoFactory(posoMetaData)
   
-  private [squeryl] def _createInstanceOfRowObject = {
-    val c = posoMetaData.constructor
-    c._1.newInstance(c._2 :_*).asInstanceOf[AnyRef];
-  }
+  private [squeryl] def _createInstanceOfRowObject =
+    _posoFactory()
   
   private [squeryl] def give(resultSetMapper: ResultSetMapper, resultSet: ResultSet) : T  = {
 
-    val o = _createInstanceOfRowObject
+    var o = _callbacks.create
+
+    if(o == null)
+      o = _createInstanceOfRowObject
     
     resultSetMapper.map(o, resultSet);
     val t = o.asInstanceOf[T]
@@ -92,8 +104,12 @@ class View[T] private [squeryl](_name: String, private[squeryl] val classOfT: Cl
 
     val it = q.iterator
 
-    if(it.hasNext)
-      Some(it.next)
+    if(it.hasNext) {
+      val ret = Some(it.next)
+      // Forces statement to be closed.
+      it.hasNext
+      ret
+    }
     else
       None
   }  

@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl
 
 import dsl.ast.{ExpressionNode}
@@ -42,16 +42,24 @@ trait Query[R] extends Iterable[R] with Queryable[R] {
     val i = iterator
     val r = i.next
     if(i.hasNext)
-      error("single called on query returning more than one row : \n" + statement)
+      org.squeryl.internals.Utils.throwError("single called on query returning more than one row : \n" + statement)
     r
   }
 
 
+  override def headOption = {
+    val i = iterator
+    if(i.hasNext)
+      Some(i.next)
+    else
+      None
+  }
+
   def distinct: Query[R]
 
-  def union(q: Query[R]): Query[R] = error("not implemented")
+  def union(q: Query[R]): Query[R] = org.squeryl.internals.Utils.throwError("not implemented")
 
-  def minus(q: Query[R]): Query[R] = error("not implemented")
+  def minus(q: Query[R]): Query[R] = org.squeryl.internals.Utils.throwError("not implemented")
 
   def forUpdate: Query[R]
 

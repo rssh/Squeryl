@@ -12,22 +12,23 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl
 
 import ast._
 import boilerplate._
-import fsm.{QueryElements, StartState, WhereState}
+import fsm._
 import org.squeryl.internals._
 import org.squeryl._
 import java.sql.{SQLException, ResultSet}
+import collection.mutable.ArrayBuffer
 
 trait QueryDsl
   extends DslFactory
-  with WhereState
+  with WhereState[Unconditioned]
   with ComputeMeasuresSignaturesFromStartOrWhereState
   with StartState
-  with QueryElements
+  with QueryElements[Unconditioned]
   with JoinSignatures
   with FromSignatures {
   outerQueryDsl =>
@@ -35,16 +36,24 @@ trait QueryDsl
   def using[A](session: Session)(a: =>A): A =
     _using(session, a _)
 
-  private def _using[A](session: Session, a: ()=>A): A =
+  private def _using[A](session: Session, a: ()=>A): A = {
+    val s = Session.currentSessionOption
     try {
-      session.bindToCurrentThread
-      val r = a()
-      r
+      if(s != None) s.get.unbindFromCurrentThread
+      try {
+        session.bindToCurrentThread
+        val r = a()
+        r
+      }
+      finally {
+        session.unbindFromCurrentThread
+        session.cleanup
+      }
     }
     finally {
-      session.unbindFromCurrentThread
-      session.cleanup
+      if(s != None) s.get.bindToCurrentThread
     }
+  }
 
   /**
    * 'transaction' causes a new transaction to begin and commit after the block execution, or rollback
@@ -56,9 +65,14 @@ trait QueryDsl
       _executeTransactionWithin(SessionFactory.newSession, a _)
     else {
       val s = Session.currentSession
-      s.unbindFromCurrentThread
-      val res = _executeTransactionWithin(SessionFactory.newSession, a _)
-      s.bindToCurrentThread
+      val res =
+        try {
+          s.unbindFromCurrentThread
+          _executeTransactionWithin(SessionFactory.newSession, a _)
+        }
+        finally {
+          s.bindToCurrentThread
+        }
       res
     }
 
@@ -111,66 +125,30 @@ trait QueryDsl
   
   implicit def __thisDsl:QueryDsl = this  
 
-  private class QueryElementsImpl(override val whereClause: Option[()=>LogicalBoolean])
-    extends QueryElements
+  private class QueryElementsImpl[Cond](override val whereClause: Option[()=>LogicalBoolean])
+    extends QueryElements[Cond]
 
-  def where(b: =>LogicalBoolean): WhereState =
-    new QueryElementsImpl(Some(b _))
+  def where(b: =>LogicalBoolean): WhereState[Conditioned] =
+    new QueryElementsImpl[Conditioned](Some(b _))
 
   def &[A](i: =>TypedExpressionNode[A]): A =
     FieldReferenceLinker.pushExpressionOrCollectValue[A](i _)
 
-  @deprecated("use the new 'join' keyword instead http://squeryl.org/joins.html")
-  def leftOuterJoin[A](a: A, matchClause: =>ExpressionNode): Option[A] = {
-    val im = FieldReferenceLinker.isYieldInspectionMode
+  implicit def singleColumnQuery2RightHandSideOfIn[A](q: Query[A]) =
+    new RightHandSideOfIn[A](q.copy(false).ast)
 
-    if(im) {
-      val joinedTableOrSubquery = FieldReferenceLinker.findOwnerOfSample(a).get
-      val oje = new OuterJoinExpression(joinedTableOrSubquery,"left", matchClause)
-      joinedTableOrSubquery.outerJoinExpression = Some(oje)
-      Some(a)
-    }
-    else if(a.isInstanceOf[net.sf.cglib.proxy.Factory])
-      None
-    else
-      Some(a)  
-  }
+  implicit def measureSingleColumnQuery2RightHandSideOfIn[A](q: Query[Measures[A]]) =
+    new RightHandSideOfIn[A](q.copy(false).ast)
 
-  @deprecated("use the new 'join' keyword instead http://squeryl.org/joins.html")
-  def rightOuterJoin[A,B](a: A, b: B, matchClause: =>ExpressionNode): (Option[A],B) = {
-    val im = FieldReferenceLinker.isYieldInspectionMode
+  implicit def measureOptionSingleColumnQuery2RightHandSideOfIn[A](q: Query[Measures[Option[A]]]) =
+    new RightHandSideOfIn[A](q.copy(false).ast)
 
-    if(im) {
-      val joinedTableOrSubquery = FieldReferenceLinker.findOwnerOfSample(a).get
-      val oje = new OuterJoinExpression(joinedTableOrSubquery,"right", matchClause)
-      joinedTableOrSubquery.outerJoinExpression = Some(oje)
-      (Some(a), b)
-    }
-    else {
-      val rA = if(a.isInstanceOf[net.sf.cglib.proxy.Factory]) None else Some(a)
-      (rA,b)
-    }
-  }
+  implicit def groupSingleColumnQuery2RightHandSideOfIn[A](q: Query[Group[A]]) =
+    new RightHandSideOfIn[A](q.copy(false).ast)
 
-  @deprecated("use the new 'join' keyword instead http://squeryl.org/joins.html")
-  def fullOuterJoin[A,B](a: A, b: B, matchClause: =>ExpressionNode): (Option[A],Option[B]) = {
-    val im = FieldReferenceLinker.isYieldInspectionMode
+  implicit def groupOptionSingleColumnQuery2RightHandSideOfIn[A](q: Query[Group[Option[A]]]) =
+    new RightHandSideOfIn[A](q.copy(false).ast)
 
-    if(im) {
-      val joinedTableOrSubquery = FieldReferenceLinker.findOwnerOfSample(a).get
-      val oje = new OuterJoinExpression(joinedTableOrSubquery,"full", matchClause)
-      joinedTableOrSubquery.outerJoinExpression = Some(oje)
-      val parentQuery = FieldReferenceLinker.inspectedQueryExpressionNode
-      parentQuery.tableExpressions.head.isRightJoined = true
-      (Some(a), Some(b))
-    }
-    else {
-      val rA = if(a.isInstanceOf[net.sf.cglib.proxy.Factory]) None else Some(a)
-      val rB = if(b.isInstanceOf[net.sf.cglib.proxy.Factory]) None else Some(b)
-      (rA,rB)
-    }
-  }
-  
   trait SingleRowQuery[R] {
     self: Query[R] =>
   }
@@ -198,7 +176,7 @@ trait QueryDsl
 
     def statement: String = _inner.statement
 
-    // Paginating a Count query makes no sense perhaps an error() would be more appropriate here:
+    // Paginating a Count query makes no sense perhaps an org.squeryl.internals.Utils.throwError() would be more appropriate here:
     def page(offset:Int, length:Int) = this      
 
     def distinct = this
@@ -234,7 +212,7 @@ trait QueryDsl
     
     def dumpAst = q.dumpAst
 
-    // TODO: think about this : Paginating a Count query makes no sense perhaps an error() would be more appropriate here.
+    // TODO: think about this : Paginating a Count query makes no sense perhaps an org.squeryl.internals.Utils.throwError() would be more appropriate here.
     def page(offset:Int, length:Int) = this
     
     def statement: String = q.statement
@@ -258,19 +236,21 @@ trait QueryDsl
 
   def update[A](t: Table[A])(s: A =>UpdateStatement):Int = t.update(s)
 
-  def manyToManyRelation[L <: KeyedEntity[_],R <: KeyedEntity[_],A <: KeyedEntity[_]](l: Table[L], r: Table[R]) = new ManyToManyRelationBuilder(l,r)
+  def manyToManyRelation[L <: KeyedEntity[_],R <: KeyedEntity[_],A <: KeyedEntity[_]](l: Table[L], r: Table[R]) = new ManyToManyRelationBuilder(l,r,None)
 
-  class ManyToManyRelationBuilder[L <: KeyedEntity[_], R <: KeyedEntity[_]](l: Table[L], r: Table[R]) {
+  def manyToManyRelation[L <: KeyedEntity[_],R <: KeyedEntity[_],A <: KeyedEntity[_]](l: Table[L], r: Table[R], nameOfMiddleTable: String) = new ManyToManyRelationBuilder(l,r,Some(nameOfMiddleTable))
+
+  class ManyToManyRelationBuilder[L <: KeyedEntity[_], R <: KeyedEntity[_]](l: Table[L], r: Table[R], nameOverride: Option[String]) {
 
     def via[A <: KeyedEntity[_]](f: (L,R,A)=>Pair[EqualityExpression,EqualityExpression])(implicit manifestA: Manifest[A], schema: Schema) = {
-      val m2m = new ManyToManyRelationImpl(l,r,manifestA.erasure.asInstanceOf[Class[A]],f,schema)
+      val m2m = new ManyToManyRelationImpl(l,r,manifestA.erasure.asInstanceOf[Class[A]], f, schema, nameOverride)
       schema._addTable(m2m)
       m2m
     }
   }
 
-  class ManyToManyRelationImpl[L <: KeyedEntity[_], R <: KeyedEntity[_], A <: KeyedEntity[_]](val leftTable: Table[L], val rightTable: Table[R], aClass: Class[A], f: (L,R,A)=>Pair[EqualityExpression,EqualityExpression], schema: Schema)
-    extends Table[A](schema.tableNameFromClass(aClass), aClass, schema, None) with ManyToManyRelation[L,R,A] {
+  class ManyToManyRelationImpl[L <: KeyedEntity[_], R <: KeyedEntity[_], A <: KeyedEntity[_]](val leftTable: Table[L], val rightTable: Table[R], aClass: Class[A], f: (L,R,A)=>Pair[EqualityExpression,EqualityExpression], schema: Schema, nameOverride: Option[String])
+    extends Table[A](nameOverride.getOrElse(schema.tableNameFromClass(aClass)), aClass, schema, None) with ManyToManyRelation[L,R,A] {
     thisTableOfA =>    
 
     def thisTable = thisTableOfA
@@ -305,23 +285,10 @@ trait QueryDsl
         _.selectElement.origin.asInstanceOf[ViewExpressionNode[_]].view == v
       ).headOption != None
 
-    /**
-     * returns a (FieldMetaData, FieldMetaData) where ._1 is the id of the KeyedEntity on the left or right side,
-     * and where ._2 is the foreign key of the association object/table
-     */
-    private def _splitEquality(ee: EqualityExpression) =
-      if(ee.left._fieldMetaData.parentMetaData.clasz == aClass) {
-        assert(ee.right._fieldMetaData.isPrimaryKey)
-        (ee.right._fieldMetaData, ee.left._fieldMetaData)
-      }
-      else {
-        assert(ee.left._fieldMetaData.isPrimaryKey)
-        (ee.left._fieldMetaData, ee.right._fieldMetaData)
-      }
 
-    private val (leftPkFmd, leftFkFmd) = _splitEquality(_leftEqualityExpr)
+    private val (leftPkFmd, leftFkFmd) = _splitEquality(_leftEqualityExpr, thisTable, false)
 
-    private val (rightPkFmd, rightFkFmd) = _splitEquality(_rightEqualityExpr)
+    private val (rightPkFmd, rightFkFmd) = _splitEquality(_rightEqualityExpr, thisTable, false)
 
     val leftForeignKeyDeclaration =
       schema._createForeignKeyDeclaration(leftFkFmd.columnName, leftPkFmd.columnName)
@@ -372,12 +339,15 @@ trait QueryDsl
             outerQueryDsl.where(matchClause._1 and matchClause._2).select((r,a))
           })
 
-        def assign(o: R, a: A) =
+        def assign(o: R, a: A) = {
           _assignKeys(o, a.asInstanceOf[AnyRef])
+          a
+        }
         
-        def associate(o: R, a: A): Unit  = {
+        def associate(o: R, a: A): A  = {
           assign(o, a)
           thisTableOfA.insertOrUpdate(a)
+          a
         }
 
         def assign(o: R): A = {
@@ -437,12 +407,15 @@ trait QueryDsl
              outerQueryDsl.where(matchClause._1 and matchClause._2).select((l, a))
           })
 
-        def assign(o: L, a: A) =
+        def assign(o: L, a: A) = {
           _assignKeys(o, a.asInstanceOf[AnyRef])
+          a
+        }
         
-        def associate(o: L, a: A): Unit = {
+        def associate(o: L, a: A): A = {
           assign(o, a)
           thisTableOfA.insertOrUpdate(a)
+          a
         }
 
         def assign(o: L): A = {
@@ -479,33 +452,40 @@ trait QueryDsl
     }
   }
 
-  def oneToManyRelation[O <: KeyedEntity[_],M <: KeyedEntity[_]](ot: Table[O], mt: Table[M]) = new OneToManyRelationBuilder(ot,mt)
+  def oneToManyRelation[O <: KeyedEntity[_],M](ot: Table[O], mt: Table[M]) = new OneToManyRelationBuilder(ot,mt)
 
-  class OneToManyRelationBuilder[O <: KeyedEntity[_],M <: KeyedEntity[_]](ot: Table[O], mt: Table[M]) {
+  class OneToManyRelationBuilder[O <: KeyedEntity[_],M](ot: Table[O], mt: Table[M]) {
     
     def via(f: (O,M)=>EqualityExpression)(implicit schema: Schema) =
       new OneToManyRelationImpl(ot,mt,f, schema)
 
   }
 
-  class OneToManyRelationImpl[O <: KeyedEntity[_],M <: KeyedEntity[_]](val leftTable: Table[O], val rightTable: Table[M], f: (O,M)=>EqualityExpression, schema: Schema)
+  class OneToManyRelationImpl[O <: KeyedEntity[_],M](val leftTable: Table[O], val rightTable: Table[M], f: (O,M)=>EqualityExpression, schema: Schema)
     extends OneToManyRelation[O,M] {
 
     schema._addRelation(this)
-    
+
+    private def _isSelfReference =
+      leftTable == rightTable
+
+    //we obtain the FieldMetaDatas from the 'via' function by creating an EqualityExpression AST and then extract the FieldMetaDatas from it,
+    // the FieldMetaData will serve to set fields (primary and foreign keys on the objects in the relation) 
     private val (_leftPkFmd, _rightFkFmd) = {
 
       var ee: Option[EqualityExpression] = None
-
+      
+      //we create a query for the sole purpose of extracting the equality (inside the relation's 'via' clause)
       from(leftTable,rightTable)((o,m) => {
         ee = Some(f(o,m))
         select(None)
       })
 
-      val ee_ = ee.get
-      
-      (ee_.left.asInstanceOf[SelectElementReference[_]].selectElement.asInstanceOf[FieldSelectElement].fieldMataData,
-       ee_.right.asInstanceOf[SelectElementReference[_]].selectElement.asInstanceOf[FieldSelectElement].fieldMataData)
+      val ee_ = ee.get  //here we have the equality AST (_ee) contains a left and right node, SelectElementReference
+      //that refer to FieldSelectElement, who in turn refer to the FieldMetaData
+
+      // now the Tuple with the left and right FieldMetaData 
+      _splitEquality(ee.get, rightTable, _isSelfReference)
     }
 
     val foreignKeyDeclaration =
@@ -526,9 +506,10 @@ trait QueryDsl
           
           val v = _leftPkFmd.get(l0)
           _rightFkFmd.set(m0, v)
+          m
         }
 
-        def associate(m: M) = {
+        def associate(m: M)(implicit ev: M <:< KeyedEntity[_]) = {
           assign(m)
           rightTable.insertOrUpdate(m)
         }
@@ -547,6 +528,7 @@ trait QueryDsl
 
           val v = _rightFkFmd.get(r)
           _leftPkFmd.set(o, v)
+          one
         }
 
         def delete =
@@ -555,6 +537,28 @@ trait QueryDsl
     }
   }
 
+  /**
+   * returns a (FieldMetaData, FieldMetaData) where ._1 is the id of the KeyedEntity on the left or right side,
+   * and where ._2 is the foreign key of the association object/table
+   */
+  private def _splitEquality(ee: EqualityExpression, rightTable: Table[_], isSelfReference: Boolean) = {
+
+    if(isSelfReference)
+      assert(ee.right._fieldMetaData.isIdFieldOfKeyedEntity || ee.left._fieldMetaData.isIdFieldOfKeyedEntity)
+
+    if(ee.left._fieldMetaData.parentMetaData.clasz == rightTable.classOfT) {
+      if(!isSelfReference)
+        assert(ee.right._fieldMetaData.isIdFieldOfKeyedEntity)
+      (ee.right._fieldMetaData, ee.left._fieldMetaData)
+    }
+    else {
+      if(!isSelfReference)
+        assert(ee.left._fieldMetaData.isIdFieldOfKeyedEntity)
+      (ee.left._fieldMetaData, ee.right._fieldMetaData)
+    }
+  }
+
+  // Composite key syntactic sugar :
 
   def compositeKey[A1,A2](a1: A1, a2: A2) =
     new CompositeKey2(a1, a2)
@@ -565,10 +569,45 @@ trait QueryDsl
   def compositeKey[A1,A2,A3,A4](a1: A1, a2: A2, a3: A3, a4: A4) =
     new CompositeKey4(a1, a2, a3, a4)
 
+  def compositeKey[A1,A2,A3,A4,A5](a1: A1, a2: A2, a3: A3, a4: A4, a5: A5) =
+    new CompositeKey5(a1, a2, a3, a4, a5)
+
+  def compositeKey[A1,A2,A3,A4,A5,A6](a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6) =
+    new CompositeKey6(a1, a2, a3, a4, a5, a6)
+
+  def compositeKey[A1,A2,A3,A4,A5,A6,A7](a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7) =
+    new CompositeKey7(a1, a2, a3, a4, a5, a6, a7)
+
+  def compositeKey[A1,A2,A3,A4,A5,A6,A7,A8](a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7, a8: A8) =
+    new CompositeKey8(a1, a2, a3, a4, a5, a6, a7, a8)
+
+  def compositeKey[A1,A2,A3,A4,A5,A6,A7,A8,A9](a1: A1, a2: A2, a3: A3, a4: A4, a5: A5, a6: A6, a7: A7, a8: A8, a9: A9) =
+    new CompositeKey9(a1, a2, a3, a4, a5, a6, a7, a8, a9)
+
+  // Tuple to composite key conversions :
+  
   implicit def t2te[A1,A2](t: (A1,A2)) = new CompositeKey2[A1,A2](t._1, t._2)
 
   implicit def t3te[A1,A2,A3](t: (A1,A2,A3)) = new CompositeKey3[A1,A2,A3](t._1, t._2, t._3)
 
   implicit def t4te[A1,A2,A3,A4](t: (A1,A2,A3,A4)) = new CompositeKey4[A1,A2,A3,A4](t._1, t._2, t._3, t._4)
-  
+
+  implicit def t5te[A1,A2,A3,A4,A5](t: (A1,A2,A3,A4,A5)) = new CompositeKey5[A1,A2,A3,A4,A5](t._1, t._2, t._3, t._4, t._5)
+
+  implicit def t6te[A1,A2,A3,A4,A5,A6](t: (A1,A2,A3,A4,A5,A6)) = new CompositeKey6[A1,A2,A3,A4,A5,A6](t._1, t._2, t._3, t._4, t._5, t._6)
+
+  implicit def t7te[A1,A2,A3,A4,A5,A6,A7](t: (A1,A2,A3,A4,A5,A6,A7)) = new CompositeKey7[A1,A2,A3,A4,A5,A6,A7](t._1, t._2, t._3, t._4, t._5, t._6, t._7)
+
+  implicit def t8te[A1,A2,A3,A4,A5,A6,A7,A8](t: (A1,A2,A3,A4,A5,A6,A7,A8)) = new CompositeKey8[A1,A2,A3,A4,A5,A6,A7,A8](t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8)
+
+  implicit def t9te[A1,A2,A3,A4,A5,A6,A7,A8,A9](t: (A1,A2,A3,A4,A5,A6,A7,A8,A9)) = new CompositeKey9[A1,A2,A3,A4,A5,A6,A7,A8,A9](t._1, t._2, t._3, t._4, t._5, t._6, t._7, t._8, t._9)
+
+  // Case statements :
+
+  def caseOf[A](expr: NumericalExpression[A]) = new CaseOfNumericalExpressionMatchStart(expr)
+
+  def caseOf[A](expr: NonNumericalExpression[A]) = new CaseOfNonNumericalExpressionMatchStart(expr)
+
+  def caseOf = new CaseOfConditionChainStart
+
 }

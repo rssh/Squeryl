@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.adapters
 
 import org.squeryl.internals.{StatementWriter, DatabaseAdapter}
@@ -61,7 +61,7 @@ class DB2Adapter extends DatabaseAdapter {
       return
     }
 
-    val f = t.posoMetaData.fieldsMetaData.filter(fmd => fmd != autoIncPK.get)
+    val f = getInsertableFields(t.posoMetaData.fieldsMetaData)
 
     val colNames = List(autoIncPK.get) ::: f.toList
     val colVals = List("next value for " + sequenceName(t)) ::: f.map(fmd => writeValue(o_, fmd, sw)).toList

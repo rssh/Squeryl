@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl
 
 import annotations.Transient
@@ -70,7 +70,6 @@ trait PersistenceStatus {
   def isPersisted: Boolean = _isPersisted
 }
 
-@deprecated("this trait is no longer necessary, it will disapear in a future version")
 trait IndirectKeyedEntity[K,T] extends KeyedEntity[K] {
   
   def idField: T
@@ -101,8 +100,6 @@ trait ReferentialAction {
  * (this is why all public methods have the implicit arg (implicit ev: Schema))
  */
 class ForeignKeyDeclaration(val idWithinSchema: Int, val foreignKeyColumnName: String, val referencedPrimaryKey: String) {
-  @deprecated("Use foreignKeyColumnName instead")
-  final def foreingKeyColumnName = foreignKeyColumnName
 
   private var _referentialActions: Option[(Option[ReferentialAction],Option[ReferentialAction])] = None
 

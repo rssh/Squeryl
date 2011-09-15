@@ -12,13 +12,16 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.internals
 
 import java.sql.{ResultSet, SQLException, Statement}
 import org.squeryl.dsl.boilerplate.Query1
 import org.squeryl.Queryable
 import org.squeryl.dsl.fsm.QueryElements
+import org.squeryl.dsl.QueryYield
+import org.squeryl.dsl.ast.{QueryExpressionElements, LogicalBoolean}
+import java.lang.RuntimeException
 
 object Utils {
 
@@ -51,31 +54,50 @@ object Utils {
     catch {case e:SQLException => {}}
 
 
-  private class DummyQueryElements
-    extends QueryElements {
-    override val whereClause = None
-  }
+  private class DummyQueryElements[Cond](override val whereClause: Option[()=>LogicalBoolean]) extends QueryElements[Cond]
+  
   
   private class DummyQuery[A,B](q: Queryable[A],f: A=>B, g: B=>Unit) extends Query1[A,Int](
     q,
     a => {
       val res = f(a);
       g(res)
-      (new DummyQueryElements).select(0)
+      (new DummyQueryElements(None)).select(0)
     },
     true)
 
+  private class DummyQuery4WhereClause[A,B](q: Queryable[A],whereClause: A=>LogicalBoolean) extends Query1[A,Int](
+    q,
+    a => {
+      (new DummyQueryElements(Some(() => whereClause(a)))).select(0)
+    },
+    true)
+
+  def createQuery4WhereClause[A](q: Queryable[A], whereClause: A=>LogicalBoolean): QueryExpressionElements =
+    new DummyQuery4WhereClause(q, whereClause).ast
+  
   /**
    * visitor will get applied on a proxied Sample object of the Queryable[A],
    * this function is used for obtaining AST nodes or metadata from A.
    */
-  def mapSampleObject[A,B](q: Queryable[A], visitor: A=>B): B = {
-    var b:Option[B] = None
-    // if we are currently building an AST, we must save the (last) _lastAccessedFieldReference
-    val prev = FieldReferenceLinker._lastAccessedFieldReference
-    new DummyQuery(q, visitor, (b0:B) =>b = Some(b0))
-    // and restore it to the previous state (issue19)
-    FieldReferenceLinker._lastAccessedFieldReference = prev
-    b.get
-  }  
+  def mapSampleObject[A,B](q: Queryable[A], visitor: A=>B): B =
+    FieldReferenceLinker.executeAndRestoreLastAccessedFieldReference {
+      var b:Option[B] = None
+      new DummyQuery(q, visitor, (b0:B) =>b = Some(b0))
+      b.get
+    }
+
+  def throwError(msg: String): Nothing = {
+    throw new RuntimeException(msg)
+  }
+
+
+  def enumerationForValue(v: Enumeration#Value): Enumeration = {
+
+    val m = v.getClass.getField("$outer")
+
+    val enu = m.get(v).asInstanceOf[Enumeration]
+
+    enu
+  }
 }

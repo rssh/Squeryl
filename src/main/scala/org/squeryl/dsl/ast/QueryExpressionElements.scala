@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl.ast
 
 trait QueryExpressionElements extends ExpressionNode {
@@ -31,8 +31,6 @@ trait QueryExpressionElements extends ExpressionNode {
 
   def views: Iterable[QueryableExpressionNode]
 
-  def outerJoinExpressionsDEPRECATED: Iterable[OuterJoinExpression]
-
   def isJoinForm: Boolean
 
   def subQueries: Iterable[QueryableExpressionNode]
@@ -44,9 +42,12 @@ trait QueryExpressionElements extends ExpressionNode {
   def whereClause: Option[ExpressionNode]
 
   def hasUnInhibitedWhereClause =
-    whereClause != None &&
-    (! whereClause.get.inhibited) &&
-    (whereClause.get.children.filter(c => !c.inhibited) != Nil)
+    whereClause match {
+      case None => false
+      case Some(e:ExpressionNode) =>
+        if(e.inhibited) false
+        else e.children.exists(! _.inhibited)
+    }
 
   def havingClause: Option[ExpressionNode]
 

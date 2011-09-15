@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl.ast
 
 import org.squeryl.dsl._
@@ -64,10 +64,7 @@ class ViewExpressionNode[U](val view: View[U])
   val resultSetMapper = new ResultSetMapper
 
   def alias =
-    if(view.prefix != None)
-      view.prefix.get + "_" + view.name + uniqueId.get
-    else
-      view.name + uniqueId.get
+    Session.currentSession.databaseAdapter.viewAlias(this)
 
   def owns(aSample: AnyRef) = aSample eq sample.asInstanceOf[AnyRef]
 
@@ -79,14 +76,13 @@ class ViewExpressionNode[U](val view: View[U])
   def sample = _sample.get
 
   def doWrite(sw: StatementWriter) =
-      sw.write(view.prefixedName)
+      sw.write(sw.quoteName(view.prefixedName))
 
   override def toString = {
     val sb = new StringBuffer
     sb.append('ViewExpressionNode +"[")
     sb.append(sample)
     sb.append("]:")
-    dumpOuterJoinInfoForAst(sb)
     sb.append("rsm=")
     sb.append(resultSetMapper)
     sb.toString

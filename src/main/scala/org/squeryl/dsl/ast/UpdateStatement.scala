@@ -12,13 +12,18 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl.ast
 
 import org.squeryl.internals.StatementWriter
 
-class UpdateStatement(val whereClause: Option[()=>LogicalBoolean], uas: Seq[UpdateAssignment])
+class UpdateStatement(_whereClause: Option[()=>LogicalBoolean], uas: Seq[UpdateAssignment])
    extends ExpressionNode {
+
+  val whereClause: Option[LogicalBoolean] =
+    _whereClause.map(_.apply)
+
+  override def children = whereClause.toList
 
   def doWrite(sw: StatementWriter) = {}
 

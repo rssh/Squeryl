@@ -12,17 +12,18 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.internals
  
 
 import java.lang.Class
 import java.lang.annotation.Annotation
 import net.sf.cglib.proxy.{Factory, Callback, Enhancer}
-import java.lang.reflect.{Member, Constructor, Method, Field}
+import java.lang.reflect.{Member, Constructor, Method, Field, Modifier}
 import collection.mutable.{HashSet, ArrayBuffer}
 import org.squeryl.annotations._
 import org.squeryl._
+import dsl.CompositeKey
 
 class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: View[T]) {
 
@@ -35,10 +36,14 @@ class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: 
   val isOptimistic = classOf[Optimistic].isAssignableFrom(clasz)
   
   val constructor =
-    _const.headOption.orElse(error(clasz.getName +
+    _const.headOption.orElse(org.squeryl.internals.Utils.throwError(clasz.getName +
             " must have a 0 param constructor or a constructor with only primitive types")).get
 
-  val (fieldsMetaData, primaryKey) = { //(Iterable[FieldMetaData], Option[FieldMetaData])
+  /**
+   * @arg fieldsMetaData the metadata of the persistent fields of this Poso
+   * @arg primaryKey None if this Poso is not a KeyedEntity[], Either[a persistedField, a composite key]  
+   */
+  val (fieldsMetaData, primaryKey): (Iterable[FieldMetaData], Option[Either[FieldMetaData,Method]]) = {
 
     val isImplicitMode = _isImplicitMode
 
@@ -54,7 +59,7 @@ class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: 
         case e:Exception =>
           throw new RuntimeException("exception occurred while invoking constructor : " + constructor._1, e)
       }
-
+    
     val members = new ArrayBuffer[(Member,HashSet[Annotation])]
 
     _fillWithMembers(clasz, members)
@@ -105,25 +110,45 @@ class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: 
       if(isImplicitMode && _groupOfMembersIsProperty(property)) {
         fmds.append(FieldMetaData.factory.build(this, name, property, sampleInstance4OptionTypeDeduction, isOptimistic && name == "occVersionNumber"))
       }
-//      else {
-//        val colA = a.find(an => an.isInstanceOf[Column])
-//        if(colA != None)
-//          fmds.append(FieldMetaData.build(this, name, property, sampleInstance4OptionTypeDeduction))
-//      }
     }
+    
+    var k = fmds.find(fmd => fmd.isIdFieldOfKeyedEntity)
 
-    val isIndirectKeyedEntity = classOf[IndirectKeyedEntity[_,_]].isAssignableFrom(clasz)
-    val isKeyedEntity = classOf[KeyedEntity[_]].isAssignableFrom(clasz)
+    val compositePrimaryKeyGetter: Option[Method] =
+      if(k != None) // can't have both PK Field and CompositePK
+        None
+      else {
+        // verify if we have an 'id' method that is a composite key, in this case we need to construct a
+        // FieldMetaData that will become the 'primaryKey' field of this PosoMetaData
+        val isKE = classOf[KeyedEntity[Any]].isAssignableFrom(clasz)
+        val isIKE = classOf[IndirectKeyedEntity[_,_]].isAssignableFrom(clasz)
+        if(isKE || isIKE) {
 
-    val k = fmds.find(fmd =>
-      (isIndirectKeyedEntity && fmd.nameOfProperty == "idField") ||
-      (isKeyedEntity && fmd.nameOfProperty == "id")
-    )
+          val pkMethod =
+            if(isKE)
+              clasz.getMethod("id")
+            else
+              clasz.getMethod("idField")
 
+          assert(pkMethod != null, "method id or idField should exist in class " + clasz.getName)
 
-    (fmds, k) : (Iterable[FieldMetaData], Option[FieldMetaData])
+          Some(pkMethod)
+        }
+        else
+          None
+      }
+
+    val metaDataForPk: Option[Either[FieldMetaData,Method]] =
+      if(k != None)
+        Some(Left(k.get))
+      else if(compositePrimaryKeyGetter != None)
+        Some(Right(compositePrimaryKeyGetter.get))
+      else
+        None
+    
+    (fmds, metaDataForPk) //: (Iterable[FieldMetaData], Option[Either[FieldMetaData,Method]])
   }
-  
+
   def optimisticCounter =
     fieldsMetaData.find(fmd => fmd.isOptimisticCounter)
 
@@ -156,13 +181,13 @@ class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: 
       val cn = clasz.getName
       val test = params(0).getName + "$" + clasz.getSimpleName
       if(cn == test)
-        error("inner classes are not supported, except when outer class is a singleton (object)\ninner class is : " + cn)
+        org.squeryl.internals.Utils.throwError("inner classes are not supported, except when outer class is a singleton (object)\ninner class is : " + cn)
     }
 
     var res = new Array[Object](params.size)
 
     for(i <- 0 to params.length -1) {
-      val v = FieldMetaData.createDefaultValue(clasz, params(i), None)
+      val v = FieldMetaData.createDefaultValue(c, params(i), None, None)
       res(i) = v
     }
 
@@ -170,13 +195,14 @@ class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: 
   }
 
   private def _noOptionalColumnDeclared =
-    error("class " + clasz.getName + " has an Option[] member with no Column annotation with optionType declared.")
+    org.squeryl.internals.Utils.throwError("class " + clasz.getName + " has an Option[] member with no Column annotation with optionType declared.")
 
   //def createSamplePoso[T](vxn: ViewExpressionNode[T], classOfT: Class[T]): T = {
     //Enhancer.create(classOfT, new PosoPropertyAccessInterceptor(vxn)).asInstanceOf[T]
   //}
 
-  def createSample(cb: Callback) = _builder(cb)
+  def createSample(cb: Callback) =
+    FieldReferenceLinker.executeAndRestoreLastAccessedFieldReference(_builder(cb))
 
   private val _builder: (Callback) => T = {
 
@@ -192,6 +218,7 @@ class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: 
       val cb = new Array[Callback](1)
       cb(0) = callB
       e.setCallback(callB)
+      //TODO : are we creating am unnecessary instance ?  
       val fac = e.create(pc , constructor._2).asInstanceOf[Factory]
 
       fac.newInstance(pc, constructor._2, cb).asInstanceOf[T]
@@ -212,6 +239,8 @@ class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: 
       return false    
 
     val hasAField = property._1 != None
+	
+	val isAStaticField = property._1.map(f => Modifier.isStatic(f.getModifiers)).getOrElse(false)
 
     val hasGetter = property._2 != None &&
       ! classOf[java.lang.Void].isAssignableFrom(property._2.get.getReturnType) &&
@@ -241,7 +270,7 @@ class PosoMetaData[T](val clasz: Class[T], val schema: Schema, val viewOrTable: 
     }
 
     (hasAField, hasGetter, hasSetter) match {
-      case (true,  false, false) => true
+      case (true,  false, false) => !isAStaticField
       case (false, true,  true)  => true
       case (true,  true,  true)  => true
       case (true,  true, false)  => true

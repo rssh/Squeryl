@@ -12,42 +12,48 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.customtypes;
 
 
-import org.squeryl.internals.FieldReferenceLinker
-import java.util.Date
+import java.util.{Date, UUID}
 import org.squeryl.dsl.ast.{SelectElement, SelectElementReference, ConstantExpressionNode}
 import org.squeryl.dsl._
 import java.sql.Timestamp
+import org.squeryl.internals.{OutMapper, FieldReferenceLinker}
+import com.sun.org.apache.xalan.internal.xsltc.compiler.util.IntType
 
-trait CustomType extends Product1[Any] {
+trait CustomType[T] extends Product1[T] {
+  def value: T
+  def _1 = value
   def canEqual(a:Any) = false
 }
 
 trait CustomTypesMode extends QueryDsl {
 
   implicit def createConstantNodeOfScalarIntType(i: Int) =
-    new ConstantExpressionNode[Int](i) with NumericalExpression[Int]
+    new ConstantExpressionNode[IntType](mapInt2IntType(i)) with NumericalExpression[IntType]
 
   implicit def createConstantNodeOfScalarStringType(s: String) =
-    new ConstantExpressionNode[String](s) with StringExpression[String]
+    new ConstantExpressionNode[StringType](mapString2StringType(s)) with StringExpression[StringType]
 
   implicit def createConstantNodeOfScalarDoubleType(i: Double) =
-    new ConstantExpressionNode[Double](i) with NumericalExpression[Double]
+    new ConstantExpressionNode[DoubleType](mapDouble2DoubleType(i)) with NumericalExpression[DoubleType]
 
   implicit def createConstantNodeOfScalarBigDecimalType(i: BigDecimal) =
-    new ConstantExpressionNode[BigDecimal](i) with NumericalExpression[BigDecimal]
+    new ConstantExpressionNode[BigDecimalType](mapBigDecimal2BigDecimalType(i)) with NumericalExpression[BigDecimalType]
 
   implicit def createConstantNodeOfScalarFloatType(i: Float) =
-    new ConstantExpressionNode[Float](i) with NumericalExpression[Float]
+    new ConstantExpressionNode[FloatType](mapFloat2FloatType(i)) with NumericalExpression[FloatType]
 
   implicit def createConstantNodeOfScalarLongType(i: Long) =
-    new ConstantExpressionNode[Long](i) with NumericalExpression[Long]
+    new ConstantExpressionNode[LongType](mapLong2LongType(i)) with NumericalExpression[LongType]
 
   implicit def createConstantNodeOfScalarBooleanType(i: Boolean) =
-    new ConstantExpressionNode[Boolean](i) with NonNumericalExpression[Boolean]
+    new ConstantExpressionNode[BooleanType](mapBoolean2BooleanType(i)) with NonNumericalExpression[BooleanType]
+
+  implicit def createConstantNodeOfScalarBinaryType(i: Array[Byte]) =
+    new ConstantExpressionNode[BinaryType](mapBinary2BinaryType(i)) with BinaryExpression[BinaryType]
 
   type ByteType = ByteField
 
@@ -70,7 +76,11 @@ trait CustomTypesMode extends QueryDsl {
   type TimestampType = TimestampField
 
   type EnumerationValueType = Enumeration#Value
-  
+
+  type BinaryType = BinaryField
+
+  type UuidType = UuidField
+
   protected def mapByte2ByteType(i: Byte) = new ByteField(i)
   protected def mapInt2IntType(i: Int) = new IntField(i)
   protected def mapString2StringType(s: String) = new StringField(s)
@@ -82,6 +92,11 @@ trait CustomTypesMode extends QueryDsl {
   protected def mapDate2DateType(b: Date) = new DateField(b)
   protected def mapTimestamp2TimestampType(b: Timestamp) = new TimestampField(b)
   //protected def mapInt2EnumerationValueType(b: Int): EnumerationValueType
+  protected def mapBinary2BinaryType(d: Array[Byte]) = new BinaryField(d)
+  protected def mapObject2UuidType(u: AnyRef) = new UuidField(u match {
+    case u: UUID => u
+    case s: String => UUID.fromString(s)
+  })
 
   protected implicit val sampleByte: ByteType = new ByteField(0)
   protected implicit val sampleInt = new IntField(0)
@@ -93,8 +108,9 @@ trait CustomTypesMode extends QueryDsl {
   protected implicit val sampleBoolean = new BooleanField(false)
   protected implicit val sampleDate = new DateField(new Date)
   protected implicit def sampleTimestamp = new TimestampField(new Timestamp(0))
+  protected implicit val sampleBinary: BinaryType = new BinaryField(Array[Byte](0))
+  protected implicit val sampleUuid: UuidType= new UuidField(UUID.fromString("00000000-0000-0000-0000-000000000000"))
 
-  
   //TODO Scala bug report, implicit params should work here , but they don't ...
   def createLeafNodeOfScalarIntType(i: IntField) =
     FieldReferenceLinker.takeLastAccessedFieldReference match {
@@ -227,7 +243,7 @@ trait CustomTypesMode extends QueryDsl {
   def createLeafNodeOfEnumExpressionType[A](e: EnumerationValueType): EnumExpression[Enumeration#Value] =
     FieldReferenceLinker.takeLastAccessedFieldReference match {
       case None =>
-        new ConstantExpressionNode[Enumeration#Value](e) with EnumExpression[Enumeration#Value]
+        new ConstantExpressionNode[Enumeration#Value](e, Some(outMapperFromEnumValue(e))) with EnumExpression[Enumeration#Value]
       case Some(n:SelectElement) =>
         new SelectElementReference[Enumeration#Value](n)(n.createEnumerationMapper) with  EnumExpression[Enumeration#Value]
     }
@@ -235,7 +251,7 @@ trait CustomTypesMode extends QueryDsl {
   def createLeafNodeOfEnumExpressionOptionType[A](e: Option[EnumerationValueType]): EnumExpression[Option[Enumeration#Value]] =
     FieldReferenceLinker.takeLastAccessedFieldReference match {
       case None =>
-        new ConstantExpressionNode[Option[Enumeration#Value]](e) with EnumExpression[Option[Enumeration#Value]]
+        new ConstantExpressionNode[Option[Enumeration#Value]](e, outMapperOptionFromOptionEnumValue(e)) with EnumExpression[Option[Enumeration#Value]]
       case Some(n:SelectElement) =>
         new SelectElementReference[Option[Enumeration#Value]](n)(n.createEnumerationOptionMapper) with  EnumExpression[Option[Enumeration#Value]]
     }
@@ -255,48 +271,64 @@ trait CustomTypesMode extends QueryDsl {
       case Some(n:SelectElement) =>
         new SelectElementReference[Option[TimestampType]](n) with DateExpression[Option[TimestampType]]
     }
-  
+
+  def createLeafNodeOfScalarUuidType(d: UuidField) =
+    FieldReferenceLinker.takeLastAccessedFieldReference match {
+      case None =>
+        new ConstantExpressionNode[UuidType](d) with UuidExpression[UuidType]
+      case Some(n:SelectElement) =>
+        new SelectElementReference[UuidType](n) with UuidExpression[UuidType]
+    }
+
+  def createLeafNodeOfScalarUuidOptionType(d: Option[UuidField]) =
+    FieldReferenceLinker.takeLastAccessedFieldReference match {
+      case None =>
+        new ConstantExpressionNode[Option[UuidType]](d) with UuidExpression[Option[UuidType]]
+      case Some(n:SelectElement) =>
+        new SelectElementReference[Option[UuidType]](n) with UuidExpression[Option[UuidType]]
+    }
+
+  def createLeafNodeOfScalarBinaryType(i: BinaryField) =
+    FieldReferenceLinker.takeLastAccessedFieldReference match {
+      case None =>
+        new ConstantExpressionNode[BinaryType](i) with BinaryExpression[BinaryType]
+      case Some(n:SelectElement) =>
+        new SelectElementReference[BinaryType](n)(createOutMapperBinaryType) with BinaryExpression[BinaryType]
+    }
+
+  def createLeafNodeOfScalarBinaryOptionType(i: Option[BinaryField]) =
+    FieldReferenceLinker.takeLastAccessedFieldReference match {
+      case None =>
+        new ConstantExpressionNode[Option[BinaryType]](i) with BinaryExpression[Option[BinaryType]]
+      case Some(n:SelectElement) =>
+        new SelectElementReference[Option[BinaryType]](n)(createOutMapperBinaryTypeOption) with BinaryExpression[Option[BinaryType]]
+    }
+
 }
 
 object CustomTypesMode extends CustomTypesMode 
 
 
-class ByteField(val value: Byte) extends CustomType {
-  def _1: Any = value
-}
+class ByteField(val value: Byte) extends CustomType[Byte]
 
-class IntField(val value: Int) extends CustomType {
-  def _1: Any = value
-}
+class IntField(val value: Int) extends CustomType[Int]
 
-class StringField(val value: String) extends CustomType {
-  def _1: Any = value
-}
+class StringField(val value: String) extends CustomType[String]
 
-class DoubleField(val value: Double) extends CustomType {
-  def _1: Any = value
-}
+class DoubleField(val value: Double) extends CustomType[Double]
 
-class BigDecimalField(val value: BigDecimal) extends CustomType {
-  def _1: Any = value
-}
+class BigDecimalField(val value: BigDecimal) extends CustomType[BigDecimal]
 
-class FloatField(val value: Float) extends CustomType {
-  def _1: Any = value
-}
+class FloatField(val value: Float) extends CustomType[Float]
 
-class LongField(val value: Long) extends CustomType {
-  def _1: Any = value
-}
+class LongField(val value: Long) extends CustomType[Long]
 
-class BooleanField(val value: Boolean) extends CustomType {
-  def _1: Any = value
-}
+class BooleanField(val value: Boolean) extends CustomType[Boolean]
 
-class DateField(val value: Date) extends CustomType {
-  def _1: Any = value
-}
+class DateField(val value: Date) extends CustomType[Date]
 
-class TimestampField(val value: Timestamp) extends CustomType {
-  def _1: Any = value
-}
+class TimestampField(val value: Timestamp) extends CustomType[Timestamp]
+
+class BinaryField(val value: Array[Byte]) extends CustomType[Array[Byte]]
+
+class UuidField(val value: UUID) extends CustomType[UUID]

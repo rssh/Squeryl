@@ -12,18 +12,19 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.adapters
 
 import org.squeryl.dsl.ast.FunctionNode
-import java.sql.{SQLException}
+import java.sql.{ResultSet, SQLException}
+import java.util.UUID
 import org.squeryl.internals.{StatementWriter, DatabaseAdapter}
 import org.squeryl.{Session, Table}
 
 class PostgreSqlAdapter extends DatabaseAdapter {
 
   override def intTypeDeclaration = "integer"
-  override def stringTypeDeclaration = "varchar(255)"
+  override def stringTypeDeclaration = "varchar"
   override def stringTypeDeclaration(length:Int) = "varchar("+length+")"
   override def booleanTypeDeclaration = "boolean"
   override def doubleTypeDeclaration = "double precision"
@@ -31,6 +32,10 @@ class PostgreSqlAdapter extends DatabaseAdapter {
   override def bigDecimalTypeDeclaration = "numeric"
   override def bigDecimalTypeDeclaration(precision:Int, scale:Int) = "numeric(" + precision + "," + scale + ")"
   override def binaryTypeDeclaration = "bytea"
+  override def uuidTypeDeclaration = "uuid"
+
+  override def foreignKeyConstraintName(foreignKeyTable: Table[_], idWithinSchema: Int) =
+    foreignKeyTable.name + "FK" + idWithinSchema
 
   override def postCreateTable(t: Table[_], printSinkWhenWriteOnlyMode: Option[String => Unit]) = {
 
@@ -38,7 +43,7 @@ class PostgreSqlAdapter extends DatabaseAdapter {
 
     for(fmd <-autoIncrementedFields) {
       val sw = new StatementWriter(false, this)
-      sw.write("create sequence ", fmd.sequenceName)
+      sw.write("create sequence ", quoteName(fmd.sequenceName))
 
       if(printSinkWhenWriteOnlyMode == None) {
         val st = Session.currentSession.connection.createStatement
@@ -66,15 +71,15 @@ class PostgreSqlAdapter extends DatabaseAdapter {
       return
     }
 
-    val f = t.posoMetaData.fieldsMetaData.filter(fmd => fmd != autoIncPK.get)
+    val f = getInsertableFields(t.posoMetaData.fieldsMetaData)
 
     val colNames = List(autoIncPK.get) ::: f.toList
-    val colVals = List("nextval('" + autoIncPK.get.sequenceName + "')") ::: f.map(fmd => writeValue(o_, fmd, sw)).toList
+    val colVals = List("nextval('" + quoteName(autoIncPK.get.sequenceName) + "')") ::: f.map(fmd => writeValue(o_, fmd, sw)).toList
 
     sw.write("insert into ");
-    sw.write(t.prefixedName);
+    sw.write(quoteName(t.prefixedName));
     sw.write(" (");
-    sw.write(colNames.map(fmd => fmd.columnName).mkString(", "));
+    sw.write(colNames.map(fmd => quoteName(fmd.columnName)).mkString(", "));
     sw.write(") values ");
     sw.write(colVals.mkString("(",",",")"));
   }
@@ -85,7 +90,7 @@ class PostgreSqlAdapter extends DatabaseAdapter {
    e.getSQLState.equals("42P01")
 
   override def writeDropForeignKeyStatement(foreignKeyTable: Table[_], fkName: String) =
-    "alter table " + foreignKeyTable.prefixedName + " drop constraint " + fkName
+    "alter table " + quoteName(foreignKeyTable.prefixedName) + " drop constraint " + quoteName(fkName)
 
   override def failureOfStatementRequiresRollback = true
   
@@ -94,7 +99,12 @@ class PostgreSqlAdapter extends DatabaseAdapter {
     val autoIncrementedFields = t.posoMetaData.fieldsMetaData.filter(_.isAutoIncremented)
 
     for(fmd <-autoIncrementedFields) {
-      execFailSafeExecute("drop sequence " + fmd.sequenceName, e=>e.getSQLState.equals("42P01"))
+      execFailSafeExecute("drop sequence " + quoteName(fmd.sequenceName), e=>e.getSQLState.equals("42P01"))
     }
   }
+
+  override def quoteIdentifier(s: String) = List("\"", s.replace("\"", "\"\""), "\"").mkString
+
+  override def convertFromUuidForJdbc(u: UUID): AnyRef = u
+  override def convertToUuidForJdbc(rs: ResultSet, i: Int): UUID = rs.getObject(i).asInstanceOf[UUID]
 }

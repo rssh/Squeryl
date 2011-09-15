@@ -12,7 +12,7 @@
  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
  * See the License for the specific language governing permissions and
  * limitations under the License.
- ******************************************************************************/
+ ***************************************************************************** */
 package org.squeryl.dsl.ast
 
 import org.squeryl.internals._
@@ -26,13 +26,8 @@ class QueryExpressionNode[R](_query: AbstractQuery[R],
     with QueryableExpressionNode {
 
   def tableExpressions: Iterable[QueryableExpressionNode] = 
-    List(views.filter(v => ! v.isOuterJoinedDEPRECATED && ! v.inhibited),
-         subQueries.filter(v => ! v.isOuterJoinedDEPRECATED && ! v.inhibited)).flatten
-
-  def outerJoinExpressionsDEPRECATED: Iterable[OuterJoinExpression] =
-    List(views.filter(v => v.isOuterJoinedDEPRECATED && ! v.inhibited),
-         subQueries.filter(v => v.isOuterJoinedDEPRECATED && ! v.inhibited))
-            .flatten.map(v => v.outerJoinExpression.get)
+    List(views.filter(v => ! v.inhibited),
+         subQueries.filter(v => ! v.inhibited)).flatten
 
   def isJoinForm = _queryYield.joinExpressions != Nil
 
@@ -43,12 +38,29 @@ class QueryExpressionNode[R](_query: AbstractQuery[R],
 
   private var _sample: Option[AnyRef] = None
 
+  private def _isPrimitiveType(o: AnyRef) =
+    FieldMetaData._isSupportedFieldType.handleType(o.getClass, None)
+
+  def isUseableAsSubquery: Boolean =
+    _sample match {
+      case None => org.squeryl.internals.Utils.throwError("method cannot be called before initialization")
+      case Some(p:Product) =>
+        if(p.getClass.getName.startsWith("scala.Tuple")) {
+          val z = (for(i <- 0 to (p.productArity - 1)) yield p.productElement(i))
+          ! z.exists(o => _isPrimitiveType(o.asInstanceOf[AnyRef]))
+        }
+        else
+          true
+      case Some(a:AnyRef) => ! _isPrimitiveType(a)
+    }
+
+
   def sample:AnyRef = _sample.get
 
   def owns(aSample: AnyRef) = 
     _sample != None && _sample.get.eq(aSample)
   
-  def getOrCreateSelectElement(fmd: FieldMetaData, forScope: QueryExpressionElements) = error("implement me")
+  def getOrCreateSelectElement(fmd: FieldMetaData, forScope: QueryExpressionElements) = org.squeryl.internals.Utils.throwError("implement me")
 
   override def toString = {
     val sb = new StringBuffer
@@ -57,7 +69,6 @@ class QueryExpressionNode[R](_query: AbstractQuery[R],
       sb.append("root:")
     sb.append(id)
     sb.append("]")
-    dumpOuterJoinInfoForAst(sb)
     sb.append(":rsm="+_query.resultSetMapper)
     sb.toString
   }
@@ -67,10 +78,10 @@ class QueryExpressionNode[R](_query: AbstractQuery[R],
       selectList.toList,
       views.toList,
       subQueries.toList,
-      outerJoinExpressionsDEPRECATED.map(oje => oje.matchExpression),
       tableExpressions.filter(e=> e.joinExpression != None).map(_.joinExpression.get).toList,  
       whereClause.toList,
       groupByClause.toList,
+      havingClause.toList,
       orderByClause.toList      
     ).flatten
 
@@ -112,6 +123,10 @@ class QueryExpressionNode[R](_query: AbstractQuery[R],
         }
       })
     }
+  }
+
+  def propagateOuterScope() {
+    filterDescendantsOfType[NestedExpression].foreach((n) => n.propagateOuterScope(this))
   }
 
   def selectList: Iterable[SelectElement] = _selectList
